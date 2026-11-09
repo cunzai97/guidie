@@ -192,7 +192,8 @@ function resultTail(h, me, R) {
   if (R.zhaiMode === 'face1') return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}，${me(h.opener)}开盅，全场${h.bid.face}实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${me(h.winner)} +1 / ${me(h.loser)} −1。`;
   const act = h.slash ? '劈' : '开盅', k = h.stake || R.stake;
   const z = h.bid && h.bid.zhai ? '（斋）' : '';
-  return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}${z}，${me(h.opener)}${act}，全场实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${me(h.winner)} +${k} / ${me(h.loser)} −${k}。`;
+  const tail = h.loserPays === false ? `${me(h.winner)} +${k}，输家不扣分。` : `${me(h.winner)} +${k} / ${me(h.loser)} −${k}。`;
+  return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}${z}，${me(h.opener)}${act}，全场实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${tail}`;
 }
 
 // 合法动作边界：经典套完全复刻旧菜单（逐字），新套按规则集列出转斋/破斋/劈。
@@ -221,13 +222,25 @@ function legalMenu(round, rules) {
     return lines.join('\n');
   }
   const lines = ['你现在有几个选择：'];
+  const openPay = R.openLoserLoses ? `赢家 +${R.stake} / 输家 −${R.stake}` : `赢家 +${R.stake}、输家不扣分`;
   lines.push(R.slash
-    ? `  ① 开盅或劈（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅赢家 +${R.stake} / 输家 −${R.stake}；劈结算一样但赢家 +${R.slashStake} / 输家 −${R.slashStake}`
-    : `  ① 开盅（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）`);
+    ? `  ① 开盅或劈（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}；劈赢家 +${R.slashStake} / 输家 −${R.slashStake}（只有劈会扣输家的分）`
+    : `  ① 开盅（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}`);
   const raises = [];
   const zc = E.zhaiCount(round), bc = E.breakCount(round);
   if (!round.zhai && zc != null) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
-  if (round.zhai && bc != null) raises.push(`破斋：喊 ${bc} 个任意点数、写「破斋」——个数翻倍；这一手起 1 恢复万能`);
+  if (round.zhai && bc != null) {
+    const bf = E.breakFaces(round);
+    if (bf && bf.length) {
+      const pre = round.preZhai;
+      const facesTxt = bf.length === 6 ? '任意点数' : bf.slice().sort((x, y) => E.ord(x) - E.ord(y)).join('/') + ' 任选';
+      raises.push(`破斋：喊 ${bc} 个 ${facesTxt}、写「破斋」——个数翻倍`
+        + (pre && bc === pre.count ? `，且点数必须大于斋前那一手的 ${pre.face}（破斋不能比斋前低）` : '')
+        + `；这一手起 1 恢复万能`);
+    } else if (bf && round.preZhai) {
+      raises.push(`本轮破不了斋：翻倍到 ${bc} 个也超不过斋前那一手（${round.preZhai.count} 个 ${round.preZhai.face}）`);
+    }
+  }
   if (b.count < 10) raises.push('把个数加到 ' + (b.count + 1) + '~10 任选（可以一次跳加好几个），此时点数 1~6 任选'
     + (round.zhai ? '、仍留在斋状态' : '')
     + (round.zhai && bc != null ? '；但 ' + bc + ' 个这一手固定算破斋' : ''));
@@ -235,7 +248,7 @@ function legalMenu(round, rules) {
     const higher = E.FACE_ORDER.filter(f => E.ord(f) > E.ord(b.face));
     if (higher.length) raises.push('个数保持 ' + b.count + ' 不变、只把点数换成更大的：' + higher.join('/') + ' 任选');
   }
-  if (round.zhai) raises.push('当前是斋状态：1 不算万能，只数真实点数');
+  if (round.zhai) raises.push('当前是斋状态：1 不算万能，只数真实点数；普通抬价写不写「斋」都可以（写了也按普通抬价处理）');
   lines.push(raises.length ? ('  ② 喊价：' + raises.join('；或者 ') + '。')
     : (R.slash ? '  ② 已无更高价可喊，只能开盅或劈。' : '  ② 已无更高价可喊，只能开盅。'));
   return lines.join('\n');
@@ -424,7 +437,10 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
   }
   if (result && result.forfeit) {
     L.push('');
-    L.push(`结算：${me(result.loser)} 未能给出合法行动判负 → ${me(result.winner)} +1 / ${me(result.loser)} −1。本轮${result.winner === who ? '你赢' : '你输'}。`);
+    const fk = result.stake || 1;
+    L.push(`结算：${me(result.loser)} 未能给出合法行动判负 → ${me(result.winner)} +${fk}`
+      + (result.loserPays === false ? '，输家不扣分' : ` / ${me(result.loser)} −${fk}`)
+      + `。本轮${result.winner === who ? '你赢' : '你输'}。`);
   } else if (result && result.bid) {
     L.push('');
     if (R.zhaiMode === 'face1') {
@@ -434,7 +450,8 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
     } else {
       const k = result.stake || R.stake;
       const wildNote = !result.zhai && result.bid.face !== 1 && result.wild ? `（其中 ${result.wild} 个来自万能1）` : '';
-      L.push(`结算：${me(result.bid.by)}喊 ${result.bid.count}个${result.bid.face}${seqTag(result.bid, R)}，${me(result.opener)}${result.slash ? '劈' : '开盅'}，全场${result.bid.face}实际有 ${result.actual} 个${wildNote}（${result.truth ? '够' : '不够'}）→ ${me(result.winner)} +${k} / ${me(result.loser)} −${k}。本轮${result.winner === who ? '你赢' : '你输'}。`);
+      const pay = result.loserPays === false ? `${me(result.winner)} +${k}，输家不扣分。` : `${me(result.winner)} +${k} / ${me(result.loser)} −${k}。`;
+      L.push(`结算：${me(result.bid.by)}喊 ${result.bid.count}个${result.bid.face}${seqTag(result.bid, R)}，${me(result.opener)}${result.slash ? '劈' : '开盅'}，全场${result.bid.face}实际有 ${result.actual} 个${wildNote}（${result.truth ? '够' : '不够'}）→ ${pay}本轮${result.winner === who ? '你赢' : '你输'}。`);
     }
   }
   L.push('');

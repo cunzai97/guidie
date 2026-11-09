@@ -60,7 +60,7 @@ const state = {
   runId:'', gameNo:0, finalizing:false, memos:{A:[],B:[]}, ownMemo:{A:[],B:[]},
   carry:{A:[],B:[]},        // 本局开局时从上一局继承来的整局复盘摘要（只此一份，无逐手分析）
   memory:{},                // { [模型ID|提示臂]: {text, at, gameNo} }，按模型与臂隔离
-  lastAct:{A:'—',B:'—'}, thinkMode:{A:'',B:''}, pendingReset:false,
+  lastAct:{A:'—',B:'—'}, thinkMode:{A:'',B:''}, thinkLive:{A:null,B:null}, pendingReset:false,
   flowEl:null, decCols:null, memoCols:null,
   stats:{ A:newStats(), B:newStats() }, editingId:null, editColor:PALETTE[0], ruleEditingId:null,
 };
@@ -125,7 +125,7 @@ function presetById(id){ return state.presets.find(p => p.id === id) || null; }
 function seatLabel(w){ return w === 'A' ? '甲方' : '乙方'; }
 function actText(a){
   if (!a) return '—';
-  if (a.type === 'open') return a.slash ? '劈（开盅 · 积分翻倍）' : '开盅';
+  if (a.type === 'open') return a.slash ? '劈（开盅 · 双向结算）' : '开盅';
   const tag = a.mode === 'toZhai' ? '（转斋）' : a.mode === 'breakZhai' ? '（破斋）'
     : (a.face === 1 ? '（斋）' : '');
   return '喊 ' + a.count + ' 个 ' + a.face + tag;
@@ -387,10 +387,11 @@ const RULE_FIELDS = [
   ['rFirstZhai','firstZhai'], ['rFirstFace1','firstFace1'], ['rSlash','slash'],
   ['rSlashStake','slashStake'], ['rStake','stake'], ['rAutoInfer','autoInfer'],
   ['rBreakRestoresWild','breakRestoresWild'], ['rFirstMin','firstMin'], ['rFirstMax','firstMax'],
+  ['rOpenLoserLoses','openLoserLoses'],
 ];
 // 显式列出布尔字段：不依赖 DOM 元素的 .type（受限环境 / DOM 桩里可能没有这个属性）。
 const RULE_CHECKS = new Set(['rFaceFree','rLockFace','rFirstZhai','rFirstFace1',
-  'rBreakRestoresWild','rAutoInfer','rSlash']);
+  'rBreakRestoresWild','rAutoInfer','rSlash','rOpenLoserLoses']);
 function ruleOptions(sel, keep){
   if (!sel) return;
   const list = allRules();
@@ -752,19 +753,24 @@ function addMemo(w, roundNo, text){
  * 开盅次数/开盅正确/劈 → 开盅方；转斋/破斋 → 喊价方；判负 → 判负方。
  * 对照比合并更有用——合并看不出"谁更快、谁更准"。 */
 function statRow(label, a, b, sub, better){
-  // better: 'high' 越大越好 / 'low' 越小越好 / '' 不比较
-  let win = '';
-  if (better && a !== b && a !== '—' && b !== '—') {
-    const na = parseFloat(String(a).replace(/[^\d.-]/g,'')), nb = parseFloat(String(b).replace(/[^\d.-]/g,''));
+  // better: 'high' 越大越好 / 'low' 越小越好 / '' 不比较；「3/5」这类命中率按比值算
+  let ca = '', cb = '';
+  if (better && a !== '—' && b !== '—') {
+    const num = v => {
+      const s = String(v), m = s.match(/^(\d+)\s*\/\s*(\d+)$/);
+      if (m) return +m[2] ? +m[1] / +m[2] : NaN;
+      return parseFloat(s.replace(/[^\d.-]/g, ''));
+    };
+    const na = num(a), nb = num(b);
     if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) {
       const aWin = better === 'high' ? na > nb : na < nb;
-      win = aWin ? ' win' : '';
+      ca = aWin ? ' win' : ' lose'; cb = aWin ? ' lose' : ' win';
     }
   }
   return '<div class="stat-row">'
     + '<div class="sr-k">' + esc(label) + (sub ? '<i>' + esc(sub) + '</i>' : '') + '</div>'
-    + '<div class="sr-v a' + (win ? ' win' : '') + '">' + esc(a) + '</div>'
-    + '<div class="sr-v b' + (win ? ' lose' : '') + '">' + esc(b) + '</div>'
+    + '<div class="sr-v a' + ca + '">' + esc(a) + '</div>'
+    + '<div class="sr-v b' + cb + '">' + esc(b) + '</div>'
     + '</div>';
 }
 function renderStats(){
@@ -782,7 +788,7 @@ function renderStats(){
     statRow('解析歧义', av(A, s=>s.ambiguous), av(B, s=>s.ambiguous), '多候选', 'low'),
     statRow('开盅次数', av(A, s=>s.opens), av(B, s=>s.opens), '本方开盅', ''),
     statRow('开盅正确', A.opens ? A.opensCorrect+'/'+A.opens : '—', B.opens ? B.opensCorrect+'/'+B.opens : '—', '开盅者赢', 'high'),
-    statRow('劈（翻倍）', av(A, s=>s.slashes), av(B, s=>s.slashes), '±'+activeRules().slashStake+' 分', ''),
+    statRow('劈（双向结算）', av(A, s=>s.slashes), av(B, s=>s.slashes), '±'+activeRules().slashStake+' 分', ''),
     statRow('转斋 / 破斋', A.toZhai+' / '+A.breakZhai, B.toZhai+' / '+B.breakZhai, '状态切换', ''),
     statRow('无动作判负', av(A, s=>s.forfeits), av(B, s=>s.forfeits), 'strict 模式', 'low'),
     statRow('复盘篇数', av(A, s=>s.memos), av(B, s=>s.memos), '轮末+整局', ''),
@@ -791,8 +797,8 @@ function renderStats(){
   $('panelStats').innerHTML =
       '<div class="stats-head">'
     +   '<div class="sh-k">指标</div>'
-    +   '<div class="sh-v a"><b>' + esc(nameA) + '</b><i>' + esc(seatLabel('A')) + '</i></div>'
-    +   '<div class="sh-v b"><b>' + esc(nameB) + '</b><i>' + esc(seatLabel('B')) + '</i></div>'
+    +   '<div class="sh-v a"><span class="sh-chip">甲</span><b>' + esc(nameA) + '</b></div>'
+    +   '<div class="sh-v b"><span class="sh-chip">乙</span><b>' + esc(nameB) + '</b></div>'
     + '</div>'
     + '<div class="stats-rows">' + rows.join('') + '</div>'
     + '<div class="stats-foot">对局轮数 ' + (G ? G.roundNo : 0)
@@ -896,11 +902,21 @@ async function callWithRetry(p, messages, onDelta, w, phase, budget, onRetry, ma
 }
 
 /* ---------------- 实时推演 ---------------- */
+// 流式期间端点不给逐段 usage，只能按字符估算（CJK≈1 token/字，其余≈4 字符/token），
+// 标「≈」示众；结束后用 usage 的精确值替换。速度从首个 delta 起算，不含排队/prefill。
+function estTokens(txt){
+  const cjk = (txt.match(/[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]/g) || []).length;
+  return cjk + (txt.length - cjk) / 4;
+}
+function thinkLiveReset(w, label){
+  state.thinkLive[w] = { label, n:0, t0:0, up:0 };
+  $('thinkMeta' + w).textContent = label;
+}
 function thinkStart(w, label){
   const box = $('think' + w);
   box.innerHTML = ''; box.classList.add('typing');
   state.thinkMode[w] = '';
-  $('thinkMeta' + w).textContent = label;
+  thinkLiveReset(w, label);
 }
 function thinkPush(w, kind, txt){
   const box = $('think' + w);
@@ -911,6 +927,18 @@ function thinkPush(w, kind, txt){
   }
   box.textContent = (box.textContent + txt).slice(-12000);   // 8k 预算下的长思考也看得全
   box.scrollTop = box.scrollHeight;
+  const lv = state.thinkLive[w];
+  if (lv) {
+    lv.n += estTokens(txt);
+    const now = Date.now();
+    if (!lv.t0) lv.t0 = now;
+    if (now - lv.up > 120) {
+      lv.up = now;
+      const sec = (now - lv.t0) / 1000;
+      $('thinkMeta' + w).textContent = lv.label + ' · ≈' + Math.round(lv.n) + ' tok'
+        + (sec >= 1 ? ' · ' + Math.round(lv.n / sec) + ' tok/s' : '');
+    }
+  }
 }
 function thinkEnd(w, meta){
   $('think' + w).classList.remove('typing');
@@ -947,14 +975,17 @@ async function decide(w, label){
   thinkStart(w, label);
   while (tries < 3) {
     tries++;
-    $('thinkMeta' + w).textContent = label + ' · 第 ' + tries + ' 次';
+    thinkLiveReset(w, label + ' · 第 ' + tries + ' 次');
     thinkNote(w, '请求模型 ' + p.alias);
     const out = await callWithRetry(p, msgs, (k,t) => thinkPush(w,k,t), w, 'decide', null,
       (i,e,wait) => {
         thinkNote(w, '接口没响应（' + String(e.message).slice(0,60) + '）· ' + (wait/1000) + 's 后第 ' + i + ' 次重试');
         addLog('ow', seatLabel(w) + ' 接口重试（第 ' + i + ' 次）');
       });
-    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
+    const lv = state.thinkLive[w];
+    const sec = lv && lv.t0 ? (Date.now() - lv.t0) / 1000 : out.ms / 1000;
+    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok'
+      + (out.tokens != null && sec > 0 ? ' · ' + Math.round(out.tokens / sec) + ' tok/s' : ''));
     state.stats[w].calls++;
     ms += out.ms; netSum += out.netRetries || 0;
     if (out.tokens != null) tokens += out.tokens;
@@ -996,12 +1027,14 @@ async function decide(w, label){
 
 /* ---------------- 结算 / 复盘 ---------------- */
 function settleForfeit(G, loser){
-  const win = E.other(loser), r = G.round;
-  const stake = E.rulesOf(r).stake;            // 判负按普通开盅结算，不按劈
-  G.points[win] += stake; G.points[loser] -= stake; G.losses[loser]++; G.lastLoser = loser;
+  const win = E.other(loser), r = G.round, R = E.rulesOf(r);
+  const stake = R.stake, loserPays = R.openLoserLoses;   // 判负按普通开盅结算，不按劈
+  G.points[win] += stake;
+  if (loserPays) G.points[loser] -= stake;
+  G.losses[loser]++; G.lastLoser = loser;
   r.over = true; r.revealed = true;
   const result = {
-    forfeit:true, loser, winner:win, stake, slash:false, zhai:!!(r.bid && r.bid.zhai),
+    forfeit:true, loser, winner:win, stake, loserPays, slash:false, zhai:!!(r.bid && r.bid.zhai),
     bid:r.bid || { by:loser, count:0, face:0, at:0 }, opener:null,
     actual:0, wild:0, truth:false, dice:r.dice,
   };
@@ -1016,9 +1049,10 @@ function showReveal(res, forfeit){
   const detail = forfeit
     ? seatLabel(res.loser) + ' 三次未给出合法行动'
     : seatLabel(b.by) + ' 喊 ' + b.count + ' 个 ' + b.face + tag + ' · 全场实际 ' + res.actual + ' 个 · ' + (res.truth ? '够' : '不够');
+  const payTxt = res.loserPays === false ? ' · 输家不扣分' : ' / ' + seatLabel(res.loser) + ' −' + k;
   el.innerHTML = '<div class="rv-title">' + (forfeit ? '判 负' : res.slash ? '劈 · 开 盅' : '开 盅') + '</div>'
-    + '<div class="rv-detail">' + esc(detail) + (res.slash ? ' · 积分翻倍 ±' + k : '') + '</div>'
-    + '<div class="rv-winner">本轮 <b>' + seatLabel(res.winner) + '</b> +' + k + ' / ' + seatLabel(res.loser) + ' −' + k + '</div>';
+    + '<div class="rv-detail">' + esc(detail) + (res.slash ? ' · 劈：双方 ±' + k : '') + '</div>'
+    + '<div class="rv-winner">本轮 <b>' + seatLabel(res.winner) + '</b> +' + k + payTxt + '</div>';
   el.hidden = false;
 }
 function cleanSum(t){
@@ -1042,15 +1076,16 @@ function cleanSum(t){
  */
 function factLine(h, w){
   const who = x => (x === w ? '你' : '对手');
-  const k = h.stake || 1, pm = ' +' + k + ' / ', mm = ' −' + k + '。';
-  if (h.forfeit) return '  第' + h.no + '轮结算：' + who(h.loser) + '未能给出合法行动，判负 → '
-    + who(h.winner) + pm + who(h.loser) + mm;
+  const k = h.stake || 1;
+  const pay = h.loserPays === false
+    ? who(h.winner) + ' +' + k + '，输家不扣分。'
+    : who(h.winner) + ' +' + k + ' / ' + who(h.loser) + ' −' + k + '。';
+  if (h.forfeit) return '  第' + h.no + '轮结算：' + who(h.loser) + '未能给出合法行动，判负 → ' + pay;
   const tag = h.bid.mode === 'toZhai' ? '（转斋）' : h.bid.mode === 'breakZhai' ? '（破斋）' : (h.zhai ? '（斋）' : '');
   const wild = !h.zhai && h.bid.face !== 1 && h.wild ? '（含万能1 ' + h.wild + ' 颗）' : '';
   return '  第' + h.no + '轮结算：' + who(h.bid.by) + '喊 ' + h.bid.count + '个' + h.bid.face + tag
-    + '，' + who(h.opener) + (h.slash ? '劈（积分翻倍）' : '开盅')
-    + '，全场实际 ' + h.actual + ' 个' + wild + '（' + (h.truth ? '够' : '不够') + '）→ '
-    + who(h.winner) + pm + who(h.loser) + mm
+    + '，' + who(h.opener) + (h.slash ? '劈（双方 ±' + k + '）' : '开盅')
+    + '，全场实际 ' + h.actual + ' 个' + wild + '（' + (h.truth ? '够' : '不够') + '）→ ' + pay
     + (h.dice ? ' 亮牌：你 [' + h.dice[w].join(' ') + ']，对手 [' + h.dice[w === 'A' ? 'B' : 'A'].join(' ') + ']。' : '');
 }
 function gameContextText(st, w, opts){
@@ -1183,14 +1218,14 @@ async function summarizeMatch(){
 }
 async function afterOpen(res, forfeit){
   const G = state.G, b = res.bid, k = res.stake || 1;
-  const delta = ' +' + k + ' / ' + seatLabel(res.loser) + ' −' + k;
+  const delta = ' +' + k + (res.loserPays === false ? '（对方不扣分）' : ' / ' + seatLabel(res.loser) + ' −' + k);
   const pointStr = '（积分 ' + G.points.A + ' : ' + G.points.B + '）';
   const zt = b.mode === 'toZhai' ? '（转斋）' : b.mode === 'breakZhai' ? '（破斋）' : (res.zhai ? '（斋）' : '');
   if (forfeit) {
     addLog('rs', '判负结算 → ' + seatLabel(res.winner) + delta + pointStr);
   } else {
     const act = res.slash ? '劈' : '开盅';
-    addLog('ow', seatLabel(res.opener) + ' ' + act + (res.slash ? '（积分翻倍 ±' + k + '）' : '')
+    addLog('ow', seatLabel(res.opener) + ' ' + act + (res.slash ? '（双方 ±' + k + '）' : '')
       + '，质疑 ' + seatLabel(b.by) + ' 的 ' + b.count + ' 个 ' + b.face + zt);
     let d = '全场 ' + b.face + ' 实际有 <b>' + res.actual + '</b> 个';
     if (!res.zhai && b.face !== 1 && res.wild) d += '（含万能 1 共 ' + res.wild + ' 颗）';
@@ -1240,7 +1275,7 @@ async function stepOnce(){
   const G = state.G;
   if (!G || G.over) return;
   if (!G.round || G.round.over) {
-    // 零和积分在势均力敌时会来回震荡，给观战页一个硬上限，按当前积分判胜/平局
+    // 开盅只加分不扣分时双方都会爬分，势均力敌可能长期分不出胜负，给观战页一个硬上限
     if (G.roundNo >= (state.settings.maxRounds || 60)) {
       const win = G.points.A === G.points.B ? null : (G.points.A > G.points.B ? 'A' : 'B');
       G.over = true; G.winner = win;

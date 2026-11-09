@@ -47,8 +47,8 @@
   function newMatch(cfg) {
     cfg = cfg || {};
     return {
-      roundTarget: cfg.roundTarget || 3,           // 双向积分：先到 +N 分者赢整场
-      points: { A: 0, B: 0 },                      // 零和积分：每轮赢家 +stake、输家 -stake
+      roundTarget: cfg.roundTarget || 3,           // 积分制：先到 +N 分者赢整场
+      points: { A: 0, B: 0 },                      // 开盅赢家 +stake（输家是否扣分看规则）；劈双向
       losses: { A: 0, B: 0 },                      // 兼容字段：各人输掉的轮数（观赏页进度用，非判负依据）
       rules: RS.normalize(cfg.rules || 'classic'),
       roundNo: 0, history: [], round: null,
@@ -63,7 +63,7 @@
     m.round = {
       no: m.roundNo, dice: { A: rollDice(rng), B: rollDice(rng) },
       turn: first, bid: null, seq: [], over: false, result: null, revealed: false,
-      rules: m.rules, zhai: false,
+      rules: m.rules, zhai: false, preZhai: null,   // preZhai=斋前最高价；破斋必须严格大于它，防压价死循环
     };
     return m.round;
   }
@@ -87,11 +87,28 @@
     const n = b.count * k;
     return n <= rulesOf(round).maxCount ? n : null;
   }
+  // 破斋可用的点数：翻倍只是必要条件，还必须严格大于斋前一手（转斋前的最高价），
+  // 否则「转斋→破斋」能把价越喊越低、无限循环。首喊直接斋没有斋前一手，翻倍即可。
+  // 返回 null=本桌此刻谈不上破斋；[]=翻倍值存在但没有合法点数；否则为合法点数列表。
+  function breakFaces(round) {
+    const R = rulesOf(round);
+    if (!round.zhai || !round.bid || !R.breakMultiplier) return null;
+    const bc = breakCount(round);
+    if (bc == null) return null;
+    const pre = round.preZhai;
+    if (R.breakMustExceed && pre) {
+      if (bc < pre.count) return [];
+      if (bc === pre.count) return FACES.filter(f => ord(f) > ord(pre.face));
+    }
+    return FACES.slice();
+  }
 
   function normalizeAction(round, a) {
     const R = rulesOf(round);
     if (!a || a.type === 'open') return { type: 'open', slash: !!(a && a.slash) };
     const o = { type: 'bid', count: +a.count, face: +a.face, mode: a.mode || null };
+    // 已经在斋里又写「斋 / 转斋」：这是幂等标记，按留在斋里的普通抬价处理，不逼模型重写。
+    if (o.mode === 'toZhai' && R.zhaiMode === 'half' && round.zhai) return Object.assign(o, { mode: 'normal' });
     if (o.mode === 'toZhai' || o.mode === 'breakZhai') return o;
     // 只对「完全没写标记」的动作按个数推断；legalActions 生成的 mode:'normal' 是显式的
     // 「不切换状态」，不能被个数悄悄改成破斋，否则权威集合里会凭空多出一个不存在的键。
@@ -167,7 +184,7 @@
       for (const f of zf) add({ type: 'bid', count: zc, face: f, mode: 'toZhai' });
     }
     if (round.zhai && bc != null) {
-      for (const f of FACES) add({ type: 'bid', count: bc, face: f, mode: 'breakZhai' });
+      for (const f of breakFaces(round)) add({ type: 'bid', count: bc, face: f, mode: 'breakZhai' });
     }
     add({ type: 'open', slash: false });
     if (R.slash) add({ type: 'open', slash: true });
@@ -209,6 +226,8 @@
     a = normalizeAction(round, a);
     if (!legalActionSet(round).has(actionKey(a))) throw new Error('非法喊价 ' + a.count + '个' + a.face + (a.mode !== 'normal' ? '(' + a.mode + ')' : ''));
     const z = zhaiAfter(round, a);
+    if (!round.zhai && z) round.preZhai = round.bid || null;   // 进斋：记住斋前最高价（首喊直接斋则为 null）
+    if (round.zhai && !z) round.preZhai = null;                // 破斋：约束随之解除
     round.seq.push({ who, kind: 'bid', count: a.count, face: a.face, mode: a.mode, zhai: z, at: round.seq.length + 1 });
     round.bid = { by: who, count: a.count, face: a.face, mode: a.mode, zhai: z, at: round.seq.length };
     round.zhai = z;
@@ -217,11 +236,13 @@
   }
 
   // 开盅 / 劈：质疑 round.bid。slash=true 时积分按规则集的 slashStake 翻倍。
+  // 开盅默认只给赢家加分（openLoserLoses=false）；劈固定双向结算。
   function resolveOpen(m, opener, opts) {
     const round = m.round, b = round.bid, R = rulesOf(round);
     if (!b) throw new Error('没有可开的喊价');
     const slash = !!(opts && opts.slash) && !!R.slash;
     const stake = slash ? R.slashStake : R.stake;
+    const loserPays = slash || R.openLoserLoses;
     const all = round.dice.A.concat(round.dice.B);
     const zhai = !!b.zhai;
     const actual = countFace(all, b.face, zhai);
@@ -230,9 +251,10 @@
     const loser = truth ? opener : b.by, win = other(loser);
     round.seq.push({ who: opener, kind: 'open', slash, at: round.seq.length + 1 });
     round.over = true; round.revealed = true;
-    round.result = { bid: b, opener, slash, stake, zhai, actual, wild, truth,
+    round.result = { bid: b, opener, slash, stake, loserPays, zhai, actual, wild, truth,
                      loser, winner: win, dice: round.dice, all };
-    m.points[win] += stake; m.points[loser] -= stake;   // 双向零和积分
+    m.points[win] += stake;
+    if (loserPays) m.points[loser] -= stake;
     m.losses[loser]++;
     m.lastLoser = loser;
     m.history.push({ no: round.no, ...round.result });
@@ -247,7 +269,8 @@
     const seat = w => (w === 'A' ? '甲' : '乙');
     const seqTxt = seat(h.bid.by) + '喊' + h.bid.count + '个' + h.bid.face + (h.bid.zhai ? '(斋)' : '');
     const s = h.slash ? '劈' : '开盅', k = h.stake || 1;
-    return '第' + h.no + '轮：' + seqTxt + '，' + seat(h.opener) + s + '，' + seat(h.winner) + ' +' + k + ' / ' + seat(h.loser) + ' −' + k;
+    const pad = h.loserPays === false ? '，输家不扣' : ' / ' + seat(h.loser) + ' −' + k;
+    return '第' + h.no + '轮：' + seqTxt + '，' + seat(h.opener) + s + '，' + seat(h.winner) + ' +' + k + pad;
   }
 
   // 种子化 RNG（mulberry32）：复式赛同一副骰子 deal 可复现、可座位交换
@@ -263,6 +286,6 @@
 
   return { FACES, FACE_ORDER, ord, rollDice, countFace, countOf, probBidTrue, newMatch, startRound,
            other, legalCounts, legalFaces, legalActions, legalActionSet, normalizeAction, actionKey,
-           zhaiCount, breakCount, zhaiAfter, canBid, applyBid, resolveOpen, roundLine, mulberry32,
+           zhaiCount, breakCount, breakFaces, zhaiAfter, canBid, applyBid, resolveOpen, roundLine, mulberry32,
            rulesOf, RS };
 });

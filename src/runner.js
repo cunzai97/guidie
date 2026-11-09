@@ -12,12 +12,14 @@ function applyForfeit(m, who) {
   const r = m.round;
   r.over = true; r.revealed = true;
   const loser = who, winner = E.other(who);
-  r.result = { forfeit: true, loser, winner, dice: r.dice };
-  const k = E.rulesOf(r).stake;
-  r.result.stake = k;
-  m.points[winner] += k; m.points[loser] -= k;
+  const R = E.rulesOf(r);
+  const k = R.stake, loserPays = R.openLoserLoses;
+  r.result = { forfeit: true, loser, winner, dice: r.dice, stake: k, loserPays };
+  m.points[winner] += k;
+  if (loserPays) m.points[loser] -= k;
   m.losses[loser]++; m.lastLoser = loser;
-  m.history.push({ no: r.no, bid: r.bid || { by: who, count: 0, face: 0 }, opener: winner, actual: 0, truth: false, loser, winner, forfeit: true });
+  m.history.push({ no: r.no, bid: r.bid || { by: who, count: 0, face: 0 }, opener: winner, actual: 0, truth: false,
+    loser, winner, forfeit: true, stake: k, loserPays });
   if (m.points[winner] >= m.roundTarget) { m.over = true; m.winner = winner; }
   return r.result;
 }

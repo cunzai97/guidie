@@ -104,9 +104,13 @@ const FX = RS.normalize('flex');
 const fxStates = [
   { bid:null, zhai:false },
   { bid:{ by:'B', count:5, face:6, mode:'normal', zhai:false, at:1 }, zhai:false },
-  { bid:{ by:'B', count:3, face:3, mode:'toZhai', zhai:true, at:2 }, zhai:true },
+  { bid:{ by:'B', count:3, face:3, mode:'toZhai', zhai:true, at:2 }, zhai:true, preZhai:{ by:'A', count:5, face:6, at:1 } },
   { bid:{ by:'B', count:6, face:2, mode:'breakZhai', zhai:false, at:3 }, zhai:false },
-  { bid:{ by:'B', count:8, face:1, mode:'normal', zhai:true, at:2 }, zhai:true },
+  { bid:{ by:'B', count:8, face:1, mode:'normal', zhai:true, at:2 }, zhai:true, preZhai:{ by:'A', count:9, face:2, at:1 } },
+  // 破斋须超斋前：bc=4 与斋前同个数 → 只允许更大点数；斋前是 1 → 无点可破；首喊斋无斋前 → 任意
+  { bid:{ by:'B', count:2, face:5, mode:'toZhai', zhai:true, at:2 }, zhai:true, preZhai:{ by:'A', count:4, face:5, at:1 } },
+  { bid:{ by:'B', count:2, face:3, mode:'toZhai', zhai:true, at:2 }, zhai:true, preZhai:{ by:'A', count:4, face:1, at:1 } },
+  { bid:{ by:'B', count:3, face:4, mode:'toZhai', zhai:true, at:1 }, zhai:true, preZhai:null },
 ];
 let fcombos = 0, fmismatch = 0;
 for (const base of fxStates) {
@@ -149,20 +153,75 @@ E.applyBid(zr, zr.turn, R.parseAction('行动：喊 6 个 5 破斋').action);
 ok(zr.zhai === false, '破斋后 1 恢复万能');
 console.log('  [7] 首喊斋 / 翻倍破斋 / 计数与状态切换');
 
-// ---- 8. 劈：与开盅同结算，积分零和 ±2 ----
+// ---- 7b. 漏洞回归：破斋翻倍还必须严格大于斋前一手，否则转斋→破斋压价死循环 ----
+// 实战抓到的序列：4个5 → 转斋2个5 → 破斋4个4（点数反而低于斋前，可一直循环到 2 再横跳）
+const xm = E.newMatch({ roundTarget:5, rules:FX });
+const xr = E.startRound(xm, E.mulberry32(21));
+E.applyBid(xr, xr.turn, 4, 5);
+E.applyBid(xr, xr.turn, { type:'bid', count:2, face:5, mode:'toZhai' });
+ok(xr.preZhai && xr.preZhai.count === 4 && xr.preZhai.face === 5, '转斋时引擎记住斋前最高价');
+ok(E.breakCount(xr) === 4, '破斋翻倍值 = 2 × 2 = 4');
+ok(JSON.stringify(E.breakFaces(xr)) === JSON.stringify([1,6]), '翻倍后与斋前同个数：只允许比斋前 5 更大的点数 6/1');
+const xset = E.legalActionSet(xr);
+ok(!xset.has('bid:4:4:breakZhai') && !xset.has('bid:4:5:breakZhai'), '破斋 4个4 / 4个5 不高于斋前 4个5，非法');
+ok(xset.has('bid:4:6:breakZhai') && xset.has('bid:4:1:breakZhai'), '破斋 4个6 / 4个1 高于斋前，合法');
+ok(!xset.has('bid:4:4:normal'), '翻倍个数仍固定算破斋，不能借普通抬价留在斋里绕过');
+ok(E.normalizeAction(xr, { type:'bid', count:4, face:4 }).mode === 'breakZhai', '漏写标记的 4个4 仍按破斋推断（然后判非法）');
+const xwhy = R.checkLegal(xr, { type:'bid', count:4, face:4, mode:'breakZhai' });
+ok(typeof xwhy === 'string' && xwhy.includes('斋前'), 'checkLegal 给出含「斋前」的针对性重写原因');
+ok(R.checkLegal(xr, { type:'bid', count:4, face:6, mode:'breakZhai' }) === null, 'checkLegal 放行超斋前的破斋');
+let xThrow = false;
+try { E.applyBid(xr, xr.turn, { type:'bid', count:4, face:4, mode:'breakZhai' }); } catch { xThrow = true; }
+ok(xThrow, 'applyBid 拒绝压价破斋');
+E.applyBid(xr, xr.turn, { type:'bid', count:4, face:6, mode:'breakZhai' });
+ok(xr.zhai === false && xr.preZhai === null, '合法破斋后状态与斋前记录一起清除');
+// 循环终结：再转斋→破斋把点数逼到 1 后，就再也没有合法破斋，只能抬价或开盅
+E.applyBid(xr, xr.turn, { type:'bid', count:2, face:3, mode:'toZhai' });
+ok(JSON.stringify(E.breakFaces(xr)) === JSON.stringify([1]), '斋前 4个6：破斋只剩 4个1');
+E.applyBid(xr, xr.turn, { type:'bid', count:4, face:1, mode:'breakZhai' });
+E.applyBid(xr, xr.turn, { type:'bid', count:2, face:2, mode:'toZhai' });
+ok(E.breakFaces(xr).length === 0, '斋前 4个1：翻倍同个数无更大点数，破斋封死，循环终结');
+ok(E.legalActions(xr).some(a => a.type === 'bid' && a.mode === 'normal'), '破斋封死后仍有普通抬价可走');
+console.log('  [7b] 破斋须超斋前：压价破斋非法 / 循环终结');
+
+// ---- 8. flex 计分：开盅只赢家 +1，劈才双向结算 ±1；经典套保持双向零和 ----
 const sm = E.newMatch({ roundTarget:10, rules:FX });
 const sr = E.startRound(sm, E.mulberry32(3));
 E.applyBid(sr, sr.turn, 2, 3);
 const sres = E.resolveOpen(sm, sr.turn, { slash:true });
-ok(sres.slash === true && sres.stake === 2, '劈的 stake = 2');
-ok(sm.points[sres.winner] === 2 && sm.points[sres.loser] === -2, '劈结算零和 ±2');
-ok(sm.points.A + sm.points.B === 0, '双方积分始终零和');
+ok(sres.slash === true && sres.stake === 1 && sres.loserPays === true, '劈：stake=1、输家扣分');
+ok(sm.points[sres.winner] === 1 && sm.points[sres.loser] === -1, '劈结算双向 ±1');
+ok(sm.points.A + sm.points.B === 0, '劈后积分零和');
 const nm = E.newMatch({ roundTarget:10, rules:FX });
 const nr = E.startRound(nm, E.mulberry32(4));
 E.applyBid(nr, nr.turn, 2, 3);
 const nres = E.resolveOpen(nm, nr.turn, { slash:false });
-ok(nres.stake === 1 && nm.points[nres.winner] === 1, '普通开盅仍是 ±1');
-console.log('  [8] 劈 ±2 / 开盅 ±1 / 零和');
+ok(nres.stake === 1 && nres.loserPays === false, '开盅：赢家 +1、输家不扣');
+ok(nm.points[nres.winner] === 1 && nm.points[nres.loser] === 0, '开盅只有赢家得分');
+const cm2 = E.newMatch({ roundTarget:10, rules:'classic' });
+const cr2 = E.startRound(cm2, E.mulberry32(6));
+E.applyBid(cr2, cr2.turn, 2, 3);
+ok(!E.legalActionSet(cr2).has('open:slash'), '经典套没有劈');
+const cres = E.resolveOpen(cm2, cr2.turn);
+ok(cres.stake === 1 && cres.loserPays === true && cm2.points[cres.winner] === 1 && cm2.points[cres.loser] === -1,
+  '经典套保持双向零和 ±1');
+console.log('  [8] flex 开盅+1/0 · 劈±1 · classic 仍 ±1');
+
+// ---- 8b. 斋内再写「斋」= 留在斋里的普通抬价，不判非法、不触发重试 ----
+const zm2 = E.newMatch({ roundTarget:5, rules:FX });
+const zr2 = E.startRound(zm2, E.mulberry32(31));
+E.applyBid(zr2, 'A', 4, 5);
+E.applyBid(zr2, 'B', { type:'bid', count:2, face:5, mode:'toZhai' });
+ok(zr2.zhai === true, '转入斋状态');
+const stay = R.parseAction('行动：喊 3 个 4 斋').action;
+ok(stay.mode === 'toZhai', '解析层仍把「斋」标成 toZhai（词表不变）');
+ok(E.normalizeAction(zr2, stay).mode === 'normal', '斋内再写「斋」被折成普通抬价');
+ok(R.checkLegal(zr2, stay) === null, '斋内「喊 3 个 4 斋」合法，不需要重试');
+E.applyBid(zr2, zr2.turn, stay);
+ok(zr2.bid.count === 3 && zr2.bid.face === 4 && zr2.zhai === true, '落子后仍留在斋内');
+ok(E.normalizeAction(zr2, { type:'bid', count:6, face:2, mode:'breakZhai' }).mode === 'breakZhai', '「破斋」标记不受影响');
+ok(E.normalizeAction(zr2, { type:'bid', count:4, face:6 }).mode === 'normal', '斋内普通抬价不受影响');
+console.log('  [8b] 斋内写「斋」幂等：不重试、仍留斋');
 
 // ---- 9. 自定义规则套：参数真的改变引擎与规则文本 ----
 const CUSTOM = RS.normalize({ id:'my1', name:'三倍取半 · 不许破斋', zhaiMode:'half',
@@ -177,6 +236,7 @@ ok(!E.legalActions(E.startRound(E.newMatch({ rules:CUSTOM }))).some(a => a.mode 
 const ctxt = RS.rulesText(CUSTOM);
 ok(ctxt.includes('ceil(n / 3)') && !ctxt.includes('翻倍破斋') && !ctxt.includes('「劈」'), '规则文本按参数生成');
 ok(RS.hash(CUSTOM) !== RS.hash(FX) && RS.hash('classic') === '177d9fc1', '自定义套指纹独立、经典套指纹不漂移');
+ok(RS.hash(FX) === 'b680b754', 'flex 指纹锁定（破斋须超斋前 + 开盅+1/劈±1 后的语义版本，与旧 flex 数据不可比）');
 console.log('  [9] 自定义规则套参数贯通引擎 / 文本 / 指纹');
 
 // ---- 10. 200 局 flex 随机对局，覆盖转斋、破斋、劈 ----
@@ -194,7 +254,13 @@ for (let g = 0; g < 200; g++) {
       if (a.type === 'open') { if (a.slash) nSlash++; E.resolveOpen(mm, rr.turn, { slash:a.slash }); }
       else {
         if (a.mode === 'toZhai') nToZhai++;
-        if (a.mode === 'breakZhai') nBreak++;
+        if (a.mode === 'breakZhai') {
+          nBreak++;
+          // 不变量：每一手真实落子的破斋都严格大于斋前一手（同个数则点数更大）
+          const pre = rr.preZhai;
+          ok(!pre || a.count > pre.count || (a.count === pre.count && E.ord(a.face) > E.ord(pre.face)),
+            '落子的破斋严格大于斋前', { a, pre });
+        }
         E.applyBid(rr, rr.turn, a);
       }
     }

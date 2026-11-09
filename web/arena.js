@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS = {
   ctxBudget:24000,         // 局内全量上下文的字符软预算，超出时折叠最早的逐手判断
   rules:'classic',         // 当前规则集 id（内置 classic / flex，或用户自定义套）
   ruleSets:[],             // 用户自定义规则套（内置两套不写入这里）
+  seatEffort:{A:'auto',B:'auto'},  // 开局前的每席思考强度覆盖：auto=跟随模型预设
 };
 const DEFAULT_MAX_TOKENS = 8192;
 const LS_KEY = 'd1-arena-store-v1';
@@ -78,7 +79,7 @@ function statOf(w){ return state.stats[w]; }
 function statTotal(){ return state.stats.A.steps + state.stats.B.steps; }
 function uid(){ return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 function clamp(v, lo, hi, dflt){ const n = +v; return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; }
-const EFFORTS = ['off','low','medium','high'];
+const EFFORTS = ['off','low','medium','high','xhigh'];
 function normalizeEffort(v){ return EFFORTS.indexOf(v) >= 0 ? v : 'off'; }
 function normalizeRuleSets(a){
   if (!Array.isArray(a)) return [];
@@ -95,6 +96,9 @@ function normalizeSettings(s){
   o.ruleSets = normalizeRuleSets(o.ruleSets);
   o.rules = String(o.rules || 'classic');
   o.defaultEffort = normalizeEffort(o.defaultEffort || DEFAULT_SETTINGS.defaultEffort);
+  const se = (s && s.seatEffort) || {};
+  const effPick = v => (v === 'auto' ? 'auto' : (EFFORTS.indexOf(v) >= 0 ? v : 'auto'));
+  o.seatEffort = { A: effPick(se.A), B: effPick(se.B) };
   return o;
 }
 function normalizePreset(p, dfltMaxTokens, dfltEffort){
@@ -119,7 +123,7 @@ function activeRules(){
   return (state.G && state.G.rules) ? state.G.rules : selectedRules();
 }
 function allRules(){ return RS.allRules(state.settings.ruleSets); }
-function effortLabel(e){ return { off:'关闭', low:'轻度', medium:'中度', high:'深度' }[normalizeEffort(e)] || '关闭'; }
+function effortLabel(e){ return { off:'关闭', low:'轻度', medium:'中度', high:'深度', xhigh:'极限' }[normalizeEffort(e)] || '关闭'; }
 function hostOf(base){ return String(base || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
 function presetById(id){ return state.presets.find(p => p.id === id) || null; }
 function seatLabel(w){ return w === 'A' ? '甲方' : '乙方'; }
@@ -210,7 +214,7 @@ async function loadStore(){
     state.storage = (src === server) ? 'server' : 'local';
   } else {
     state.presets = BUILTIN.map(p => normalizePreset(p, state.settings.defaultMaxTokens, state.settings.defaultEffort));
-    state.settings = Object.assign({}, DEFAULT_SETTINGS);
+    state.settings = normalizeSettings(null);
     state.seat = { A:'bl-minimax', B:'bl-glm' };
     state.storage = 'builtin';
     await saveStore();
@@ -497,7 +501,16 @@ function renderPicks(){
     }
     sel.value = cur || '';
     const p = presetById(cur);
-    $('pickMeta' + w).textContent = p ? (hostOf(p.base) + ' · ' + p.maxTokens + ' tok · 思考' + effortLabel(p.effort)) : '尚未选择';
+    $('pickMeta' + w).textContent = p ? (hostOf(p.base) + ' · ' + p.maxTokens + ' tok') : '尚未选择';
+    const esel = $('effPick' + w);
+    if (esel) {
+      const curEff = (state.settings.seatEffort && state.settings.seatEffort[w]) || 'auto';
+      esel.innerHTML = '';
+      const opts = [['auto', p ? '跟随模型（' + effortLabel(p.effort) + '）' : '跟随模型']]
+        .concat(EFFORTS.map(e => [e, effortLabel(e)]));
+      for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; esel.appendChild(o); }
+      esel.value = curEff;
+    }
     const av = $('pickAvatar' + w);
     if (p) { av.style.color = p.color; av.style.borderColor = p.color; }
   }
@@ -835,13 +848,13 @@ async function callStream(p, messages, onDelta, w, phase, budget){
     model:p.model, messages, temperature:p.temperature,
     max_tokens: budget || p.maxTokens, stream:true,
   };
-  // 每个模型独立的思考强度（off / low / medium / high）。
+  // 每个模型独立的思考强度（off / low / medium / high / xhigh）。
   // 本地 llama-server 用 chat_template_kwargs.thinking_budget，远端网关用 reasoning_effort；
   // 两个字段都带，与 CLI llm.js 的 applyEffort 口径一致，不认识的端点会忽略多余字段。
   const eff = normalizeEffort(p.effort);
   const local = /(127\.0\.0\.1|localhost):(1235|1236|1240)\b/.test(p.base || '');
   if (eff !== 'off') {
-    const THINK_BUDGET = { low:1024, medium:4096, high:12288 };
+    const THINK_BUDGET = { low:1024, medium:4096, high:12288, xhigh:24576 };
     body.chat_template_kwargs = { enable_thinking:true, thinking_budget:THINK_BUDGET[eff] || 4096 };
     body.reasoning_effort = eff;
   } else if (local) {
@@ -1387,7 +1400,12 @@ async function startMatch(){
     $('saveHint').textContent = '左右双方都要有完整的 Base URL 与模型 ID';
     openDrawer(); return;
   }
-  state.players = { A, B };
+  // 预设是共享配置：开战时拍快照，本局的席位思考强度覆盖只作用于快照，不改存档。
+  state.players = { A: Object.assign({}, A), B: Object.assign({}, B) };
+  for (const w of ['A','B']) {
+    const se = state.settings.seatEffort && state.settings.seatEffort[w];
+    if (se && se !== 'auto') state.players[w].effort = normalizeEffort(se);
+  }
   state.settings.target = +$('qTarget').value;
   state.settings.speed = +$('qSpeed').value;
   state.settings.variant = $('qVariant').value;
@@ -1416,7 +1434,7 @@ async function startMatch(){
   addLog('muted', '规则套：' + esc(RR.name) + '（#' + RS.hash(RR) + '）· ' + esc(RS.describe(RR)));
   addLog('muted', '先到 +' + state.settings.target + ' 分者胜 · 提示词臂 ' + state.settings.variant
     + ' · 预算 ' + A.maxTokens + ' / ' + B.maxTokens + ' tok'
-    + ' · 思考强度 ' + effortLabel(A.effort) + ' / ' + effortLabel(B.effort)
+    + ' · 思考强度 ' + effortLabel(state.players.A.effort) + ' / ' + effortLabel(state.players.B.effort)
     + (state.settings.summary ? ' · 双方复盘并行' : '') + ' · 最多 ' + (state.settings.maxRounds || 60) + ' 轮');
   $('setupBar').classList.add('locked');
   $('btnGod').classList.toggle('on', state.god);
@@ -1517,6 +1535,8 @@ function bindAll(){
   }
   for (const w of ['A','B']) {
     $('pick' + w).onchange = e => { state.seat[w] = e.target.value; renderPicks(); saveStore(); };
+    const esel = $('effPick' + w);
+    if (esel) esel.onchange = e => { state.settings.seatEffort[w] = e.target.value; renderPicks(); saveStore(); };
   }
   $('btnStart').onclick = startMatch;
   $('btnReset').onclick = resetTable;

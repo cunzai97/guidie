@@ -53,7 +53,7 @@
         <div class="pick-avatar" id="pickAvatarA">甲</div>
         <div class="pick-select">
           <select id="pickA" aria-label="选择甲方模型"></select>
-          <div class="pick-meta" id="pickMetaA">尚未选择</div>
+          <div class="pick-meta"><span class="pm-text" id="pickMetaA">尚未选择</span><label class="eff-pick">思考 <select id="effPickA" aria-label="甲方思考强度"></select></label></div>
         </div>
       </div>
     </div>
@@ -74,7 +74,7 @@
       <div class="pick-row">
         <div class="pick-select align-right">
           <select id="pickB" aria-label="选择乙方模型"></select>
-          <div class="pick-meta" id="pickMetaB">尚未选择</div>
+          <div class="pick-meta"><span class="pm-text" id="pickMetaB">尚未选择</span><label class="eff-pick">思考 <select id="effPickB" aria-label="乙方思考强度"></select></label></div>
         </div>
         <div class="pick-avatar" id="pickAvatarB">乙</div>
       </div>
@@ -227,6 +227,7 @@
               <option value="low">轻度 · 1024 tok 思考预算</option>
               <option value="medium">中度 · 4096 tok</option>
               <option value="high">深度 · 12288 tok</option>
+              <option value="xhigh">极限 · 24576 tok</option>
             </select>
           </label>
           <div class="colors" id="fColors"></div>
@@ -310,7 +311,7 @@
           <label class="field"><span>新建模型默认思考强度 <i>各模型可单独改</i></span>
             <select id="sDefaultEffort">
               <option value="off">关闭</option><option value="low">轻度</option>
-              <option value="medium" selected>中度</option><option value="high">深度</option>
+              <option value="medium" selected>中度</option><option value="high">深度</option><option value="xhigh">极限</option>
             </select>
           </label>
         </div>

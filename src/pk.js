@@ -92,7 +92,7 @@ async function main() {
   const out = arg('out', null);
   const globalOpts = {
     thinking: arg('thinking', 'off') === 'on',
-    effort: arg('effort', 'off'),   // off | low | medium | high
+    effort: arg('effort', 'off'),   // off | low | medium | high | xhigh
     maxTokens: parseInt(arg('max-tokens', '8192'), 10),
     temperature: parseFloat(arg('temperature', '0.7')),
     coach: has('coach'), seed,

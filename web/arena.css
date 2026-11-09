@@ -125,7 +125,17 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
   background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
   background-position:calc(100% - 17px) 51%,calc(100% - 12px) 51%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;
 }
-.pick-meta{font-size:11px;color:var(--faint);margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick-meta{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--faint);margin-top:6px;min-width:0;white-space:nowrap}
+.pick-meta .pm-text{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.side-b .pick-meta{justify-content:flex-end}
+.eff-pick{display:inline-flex;align-items:center;gap:4px;flex:none;color:var(--faint);font-size:10.5px}
+.pick-select .eff-pick select{
+  width:auto;padding:3px 20px 3px 7px;font:500 10.5px/1.2 var(--sans);border-radius:7px;
+  border:1px solid var(--line);background-color:rgba(0,0,0,.18);color:var(--dim);
+  background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),linear-gradient(135deg,var(--faint) 50%,transparent 50%);
+  background-position:calc(100% - 10px) 52%,calc(100% - 6px) 52%;background-size:4px 4px,4px 4px;background-repeat:no-repeat;
+}
+[data-theme="light"] .pick-select .eff-pick select{background-color:#fff}
 .setup-mid{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;position:relative}
 .vs-badge{
   position:absolute;top:-27px;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;

@@ -86,7 +86,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
 
   function reset() { messages = []; backbone = []; working = []; cursor = null; sys = null; callKey = {}; }
 
-  // 思考强度：off=不思考；low/medium/high=逐档加深。
+  // 思考强度：off=不思考；low/medium/high/xhigh=逐档加深。
   // 本地 llama-server 认 chat_template_kwargs.enable_thinking + thinking_budget；
   // 远程网关多数认 OpenAI 风格的 reasoning_effort。两套参数都发，端点不认的字段会自行忽略。
   function applyEffort(body) {
@@ -96,10 +96,10 @@ function makeLLMPlayer(cfg, log = () => {}) {
       return body;
     }
     if (cfg.thinkingKwargs !== false) {
-      const budget = { low: 1024, medium: 4096, high: 12288 }[e] || 4096;
+      const budget = { low: 1024, medium: 4096, high: 12288, xhigh: 24576 }[e] || 4096;
       body.chat_template_kwargs = { enable_thinking: true, thinking_budget: budget };
     }
-    body.reasoning_effort = (e === 'low' || e === 'medium' || e === 'high') ? e : 'medium';
+    body.reasoning_effort = ['low', 'medium', 'high', 'xhigh'].includes(e) ? e : 'medium';
     return body;
   }
 

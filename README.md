@@ -116,7 +116,7 @@ dice-rulesets.js   规则配置 + 生成给模型看的规则文本  ← 唯一�
 全新前端：左右双选手卡直观对战、中央喊价台、流式实时推演、底部四个明细页（流水 / 决策明细 / 轮末复盘 / 统计）。决策明细与轮末复盘也按甲方 / 乙方**左右分栏**。
 
 - **模型预设**：增删改 / 复制 / 测试连接 / 拉取模型列表 / 导入导出。配置写 `presets.json`（服务可用时）并同步 `localStorage`，服务没起也能用
-- **每模型思考强度**：`off / low / medium / high`。本地 llama-server 走 `chat_template_kwargs.thinking_budget`（1024 / 4096 / 12288），远端走 `reasoning_effort`。两个字段都发，端点不认的会忽略。**默认是「中度」**（`settings.defaultEffort`），新建模型也继承中度；复盘请求固定 `off` 以省时
+- **每模型思考强度**：`off / low / medium / high / xhigh`。本地 llama-server 走 `chat_template_kwargs.thinking_budget`（1024 / 4096 / 12288 / 24576），远端走 `reasoning_effort`。两个字段都发，端点不认的会忽略。**默认是「中度」**（`settings.defaultEffort`），新建模型也继承中度；复盘请求固定 `off` 以省时。开战前还可直接在布阵区每个席位旁用「思考」下拉临时覆盖本局强度（跟随模型 / 关闭 / 轻度 / 中度 / 深度 / 极限），开战后锁定，不改模型存档
 - **输出预算**：每个模型单独设，默认 8192
 - **统计按模型左右对照**：底部「统计」页不是两个模型的数据合并，而是**每行一个指标、甲乙两列并排**。指标按「做这个动作的那一方」归属：决策手数 / 调用 / token / 耗时 / 截断 / 歧义 → 行动方；开盅次数 / 开盅正确 / 劈 → 开盅方；转斋 / 破斋 → 喊价方；判负 → 判负方。有明确优劣的指标（重写次数、耗时、截断、判负、开盅正确率、积分）会给胜出一方标金色。合并统计看不出"谁更快、谁更准"，所以拆开
 - **亮色 / 暗色**：顶栏一键切，主题持久化
@@ -148,7 +148,7 @@ node src/analyze.js runs/llm.jsonl
 
 **player 规格**：`threshold[:阈值]`（默认 0.5）/ `random` / `always-open` / `never-open` / `llm:<端口>:<模型名>` / `wb:<模型名>`（本地网关）
 
-**开关**：`--deals N --seed S --target 分 --max-rounds N --thinking on|off --effort off|low|medium|high --rules classic|flex|<自定义id> --max-tokens N --temperature T --coach（仅 classic 生效） --context chat|memory|snapshot --prompt classic|probe --out 文件 [--append]`
+**开关**：`--deals N --seed S --target 分 --max-rounds N --thinking on|off --effort off|low|medium|high|xhigh --rules classic|flex|<自定义id> --max-tokens N --temperature T --coach（仅 classic 生效） --context chat|memory|snapshot --prompt classic|probe --out 文件 [--append]`
 
 ### 三个设计要点
 

@@ -1,10 +1,14 @@
-# 鬼骰 · 大话骰 AI 对饮（d1-mindgame）
+# 鬼骰 · 大话骰 AI 对弈评测框架
 
 > 两个模型同桌打大话骰。一条链路用来**观战**（浏览器竞技场），一条链路用来**量化**（无头评测）。
 >
 > 这个项目的重点不是"做个游戏"，而是**让模型博弈能力的评估变得可归因**：同一副牌、同一份规则、同一个提示词，结论能复现、能追责、能分组比较。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![llm-evaluation](https://img.shields.io/badge/llm-evaluation-blue.svg)](https://github.com/topics/llm-evaluation)
+[![game-theory](https://img.shields.io/badge/game--theory-blue.svg)](https://github.com/topics/game-theory)
+[![prompt-engineering](https://img.shields.io/badge/prompt--engineering-blue.svg)](https://github.com/topics/prompt-engineering)
+[![javascript](https://img.shields.io/badge/javascript-yellow.svg)](https://github.com/topics/javascript)
 
 ---
 

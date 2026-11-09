@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /* 大话骰 PK CLI。
  * 例：
- *   node pk.js --p0 threshold --p1 random --deals 30 --out bot-baseline.jsonl
- *   node pk.js --p0 llm:1235:avalon-iq3ks-256k --p1 threshold --deals 6 --thinking off
- *   node pk.js --p0 llm:1235:avalon --p1 llm:1236:minimax --deals 6 --context memory --prompt probe
- *   node pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
- *   node pk.js --p0 threshold --p1 random --deals 6 --rules flex --effort high
+ *   node src/pk.js --p0 threshold --p1 random --deals 30 --out runs/bot-baseline.jsonl
+ *   node src/pk.js --p0 llm:1235:avalon-iq3ks-256k --p1 threshold --deals 6 --thinking off
+ *   node src/pk.js --p0 llm:1235:avalon --p1 llm:1236:minimax --deals 6 --context memory --prompt probe
+ *   node src/pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
+ *   node src/pk.js --p0 threshold --p1 random --deals 6 --rules flex --effort high
  * player 规格：threshold[:阈值] | random | always-open | never-open | llm:端口:模型名
  * 规则集：--rules classic|flex|自定义id（自定义套从 presets.json 的 settings.ruleSets 读）
  */
@@ -43,7 +43,7 @@ const WB_BASE = process.env.DICE_WB_BASE || 'http://127.0.0.1:8791';
 function resolveRules(id) {
   if (RS.BUILTIN[id]) return RS.normalize(id);
   try {
-    const j = JSON.parse(fs.readFileSync(path.join(__dirname, 'presets.json'), 'utf8'));
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'presets.json'), 'utf8'));
     const custom = ((j.settings || {}).ruleSets || []).find(x => x && x.id === id);
     if (custom) return RS.normalize(custom);
   } catch (e) { /* 没配置文件时只用内置 */ }

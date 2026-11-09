@@ -4,7 +4,8 @@
    /a/...   -> http://127.0.0.1:1235/...    /b/... -> 1236（旧版固定端口）
    /wb/...  -> 本地 OpenAI 兼容网关（默认 127.0.0.1:8791，可用 DICE_WB_BASE 覆盖）
    /api/presets  GET/PUT -> presets.json（模型预设与全局设置，跨浏览器保留）
-   其余路径按静态文件从本目录提供。同源之后浏览器不再有 CORS 问题。
+   其余路径按静态文件从本目录提供（页面在 web/arena.html，共享模块在 src/）。
+   presets.json 与 runs/ 不允许静态直出：前者含本机端点与密钥，只走 /api/presets。
    请求体带 "stream": true 时按 text/event-stream 边收边发，模型的思考过程实时可见；
    每个 chunk 同时解析一遍用于落盘 calls.jsonl。
 环境变量:
@@ -15,7 +16,9 @@
 import http.server, urllib.request, urllib.error, urllib.parse, os, sys, json, time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-CALL_LOG = os.path.join(ROOT, 'calls.jsonl')   # 每次模型调用都落盘，便于复盘
+RUNS_DIR = os.path.join(ROOT, 'runs')        # 实验产物：调用流水 / 服务日志（gitignore）
+os.makedirs(RUNS_DIR, exist_ok=True)
+CALL_LOG = os.path.join(RUNS_DIR, 'calls.jsonl')   # 每次模型调用都落盘，便于复盘
 PRESETS_FILE = os.path.join(ROOT, 'presets.json')
 PORTS = {'a': 1235, 'b': 1236}
 WB_BASE = os.environ.get('DICE_WB_BASE', 'http://127.0.0.1:8791')   # 本地 OpenAI 兼容网关
@@ -83,6 +86,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _is_local_api(self):
         return urllib.parse.urlsplit(self.path).path == '/api/presets'
+
+    # 静态直出禁区：presets.json 含本机端点与 API Key（只走 /api/presets），
+    # runs/ 是实验流水，隐藏文件（.git 等）一律不暴露。
+    def _static_blocked(self):
+        p = urllib.parse.urlsplit(self.path).path
+        return p == '/presets.json' or p.startswith('/runs/') or any(s.startswith('.') for s in p.split('/') if s)
 
     # ---------- 模型预设：GET 读取 / PUT 原子写回 presets.json ----------
     def _serve_presets(self, method):
@@ -304,10 +313,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self._is_local_api(): return self._serve_presets('GET')
-        self._proxy('GET') if self._is_api() else super().do_GET()
+        if self._is_api(): return self._proxy('GET')
+        if self._static_blocked(): return self.send_error(404)
+        super().do_GET()
 
     def do_HEAD(self):
-        self._proxy('HEAD') if self._is_api() else super().do_HEAD()
+        if self._is_api(): return self._proxy('HEAD')
+        if self._static_blocked(): return self.send_error(404)
+        super().do_HEAD()
 
     def do_POST(self):
         self._proxy('POST') if self._is_api() else self.send_error(405)
@@ -322,5 +335,5 @@ class Server(http.server.ThreadingHTTPServer):
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
-    print('大话骰竞技场: http://127.0.0.1:%d/arena.html' % port, flush=True)
+    print('大话骰竞技场: http://127.0.0.1:%d/web/arena.html' % port, flush=True)
     Server(('127.0.0.1', port), Handler).serve_forever()

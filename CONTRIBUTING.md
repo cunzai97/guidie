@@ -11,21 +11,21 @@
 ```bash
 git clone <your-fork>
 cd d1-mindgame
-node test-rules.js        # 规则回归，应输出 ALL PASS
-bash run-dice.sh          # 起竞技场，默认 8899
+node tests/test-rules.js  # 规则回归，应输出 ALL PASS
+bash start.sh             # 一键起竞技场，默认 8899
 ```
 
 ## 改动前必读
 
 ### 1. 规则是单一真源
 
-`dice-rulesets.js` 是规则的唯一来源。引擎合法性（`dice-engine.js`）、行动解析（`dice-rules.js`）、给模型看的规则文本（`context.js` 的 `rulesTextFor`）都必须从它派生。
+`src/dice-rulesets.js` 是规则的唯一来源。引擎合法性（`src/dice-engine.js`）、行动解析（`src/dice-rules.js`）、给模型看的规则文本（`src/context.js` 的 `rulesTextFor`）都必须从它派生。
 
 **不要**在任何其它文件里硬编码规则描述。改了规则文本，三处会一起变；只改一处就会产生「模型看到的规则」与「引擎实际判定」不一致的诡异 bug。
 
 ### 2. 改动会改指纹
 
-`prompt_hash`（提示词指纹）与 `ruleset_hash`（规则集指纹）写在每次 run 的清单里。改了 `context.js` 的提示词或 `dice-rulesets.js` 的规则，**指纹必变**。
+`prompt_hash`（提示词指纹）与 `ruleset_hash`（规则集指纹）写在每次 run 的清单里。改了 `src/context.js` 的提示词或 `src/dice-rulesets.js` 的规则，**指纹必变**。
 
 指纹变了意味着**旧 run 与新 run 不能混进同一组 A/B 统计**。提交 PR 时请在描述里写明：
 
@@ -36,18 +36,18 @@ bash run-dice.sh          # 起竞技场，默认 8899
 
 ### 3. 经典套必须逐字稳定
 
-内置 `classic` 规则套是历史对照组，它的 `rulesText()` 返回 `null`（走 `context.js` 里逐字未动的 `RULES_TPL`），`ruleset_hash` 也刻意不因新增参数而漂移。
+内置 `classic` 规则套是历史对照组，它的 `rulesText()` 返回 `null`（走 `src/context.js` 里逐字未动的 `RULES_TPL`），`ruleset_hash` 也刻意不因新增参数而漂移。
 
 **如果你要加规则参数**：
 
-- 加进 `dice-rulesets.js` 的 `normalize()`
+- 加进 `src/dice-rulesets.js` 的 `normalize()`
 - 只在 `zhaiMode === 'half'` 套里才算自由度（像 `firstZhai` 那样），否则 classic 的指纹会变
 - 在 `hash()` 的拼接串里同步
-- 补 `test-rules.js` 的用例
+- 补 `tests/test-rules.js` 的用例
 
 ### 4. 引擎持真值
 
-引擎（`dice-engine.js`）持有唯一真值：点数统计、积分、胜负。**LLM 不参与事实判定**。模型说自己有几个点，一律不信。
+引擎（`src/dice-engine.js`）持有唯一真值：点数统计、积分、胜负。**LLM 不参与事实判定**。模型说自己有几个点，一律不信。
 
 推论：任何「让 LLM 决定分数」的想法都要先想清楚它会不会让评测自证。
 
@@ -55,17 +55,17 @@ bash run-dice.sh          # 起竞技场，默认 8899
 
 ```bash
 # 语法
-for f in *.js; do node --check "$f"; done
+for f in src/*.js web/*.js tests/*.js; do node --check "$f"; done
 python3 -c "import ast; ast.parse(open('serve-dice.py',encoding='utf-8').read())"
 
 # 规则回归
-node test-rules.js
+node tests/test-rules.js
 
 # 无头冒烟（不需要真模型也能跑的部分）
-node pk.js --p0 threshold --p1 random --deals 10 --out /tmp/bot.jsonl
+node src/pk.js --p0 threshold --p1 random --deals 10 --out runs/bot-check.jsonl
 ```
 
-新增判定逻辑时，请同步补 `test-rules.js` 的对拍用例：枚举 (局面, 动作) 全集，比对「解析层的判定」与「引擎的权威集合」必须零差异。
+新增判定逻辑时，请同步补 `tests/test-rules.js` 的对拍用例：枚举 (局面, 动作) 全集，比对「解析层的判定」与「引擎的权威集合」必须零差异。
 
 ## 提交信息
 
@@ -80,8 +80,7 @@ node pk.js --p0 threshold --p1 random --deals 10 --out /tmp/bot.jsonl
 `.gitignore` 已经覆盖实验产物。特别注意：
 
 - `presets.json` —— 含本机 Base URL 与 API Key，**永远不要提交**
-- `*.jsonl` —— 实验数据
-- `calls.jsonl` —— 调用流水
+- `runs/` —— 实验数据（`*.jsonl`）、调用流水（`calls.jsonl`）、服务日志
 
 要分享配置，用页面里的「导出 / 导入」功能。
 

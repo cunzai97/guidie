@@ -1,6 +1,6 @@
 /* 离线冒烟：桩 fetch 驱动持久对话模式，验证对话累积/跨局 reset/增量渲染。不触网、不烧积分。 */
-const { runPK } = require('./runner.js');
-const { makeLLMPlayer } = require('./llm.js');
+const { runPK } = require('../src/runner.js');
+const { makeLLMPlayer } = require('../src/llm.js');
 
 const calls = [];
 global.fetch = async (url, opt) => {

@@ -1,8 +1,8 @@
 /* 定向回归：退化回声不得进入持久历史、不得级联放大。
  * 桩模型可控地在开局前 N 次调用照抄提示（回声），之后正常落子。
  * 验证修复后的结构不变量：原始回声永不作为 assistant 内容入史；判负只留中性记录；后续回合干净。 */
-const { runPK } = require('./runner.js');
-const { makeLLMPlayer } = require('./llm.js');
+const { runPK } = require('../src/runner.js');
+const { makeLLMPlayer } = require('../src/llm.js');
 
 function scenario(echoFirst, label) {
   const captured = [];

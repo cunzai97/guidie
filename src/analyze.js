@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* 博弈质量分析：从 PK 落盘 jsonl 抽每个模型的判断句，分桶量化博弈深度。
- * 用法: node analyze.js avalon-vs-minimax-t10.jsonl [每桶样例数=6] [--all]
+ * 用法: node src/analyze.js runs/avalon-vs-minimax-t10.jsonl [每桶样例数=6] [--all]
  *  - 默认只统计 status=complete 的 run；中断/未完成的 run 会被跳过（--all 可强制纳入）。
  *  - 深度桶是关键词启发式，只作描述性参考；提示词本身也会命中这些桶，别当因果证据。
  *  - 「判断 × 真值」小节依赖 call 与 game.events 的事件主键，是本文件最可信的关联信号。

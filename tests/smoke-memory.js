@@ -1,6 +1,6 @@
 /* 离线冒烟：桩 fetch 驱动摘要链模式，验证 backbone 增长 / working 轮末清空 / 笔记带入下一轮 / 跨局 reset。不触网。 */
-const { runPK } = require('./runner.js');
-const { makeLLMPlayer } = require('./llm.js');
+const { runPK } = require('../src/runner.js');
+const { makeLLMPlayer } = require('../src/llm.js');
 
 const captured = [];
 global.fetch = async (url, opt) => {

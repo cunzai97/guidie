@@ -5,14 +5,14 @@
  * 3) parseAction 关键样例
  * 4) UMD 模块在"浏览器全局"与 Node 下行为一致
  * 5) 300 局随机对局，校验合法性、计数与判负
- * 用法: node test-rules.js
+ * 用法: node tests/test-rules.js
  */
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-const E = require('./dice-engine.js');
-const C = require('./context.js');
-const R = require('./dice-rules.js');
+const E = require('../src/dice-engine.js');
+const C = require('../src/context.js');
+const R = require('../src/dice-rules.js');
 
 let failed = 0;
 function ok(cond, label, extra) {
@@ -66,7 +66,7 @@ console.log(`  [3] parseAction ${cases.length + 1} 个样例`);
 // ---- 4. UMD 双端一致 ----
 const sandbox = { DiceEngine: E };
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname, 'dice-rules.js'), 'utf8'), sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'dice-rules.js'), 'utf8'), sandbox);
 ok(!!sandbox.DiceRules, '浏览器全局下 DiceRules 可用');
 for (const raw of ['对手喊了 3 个 5。\n\n开盅', '喊 4 个 6', '']) {
   ok(JSON.stringify(sandbox.DiceRules.parseAction(raw)) === JSON.stringify(R.parseAction(raw)), '双端 parseAction 一致: ' + raw.slice(0, 12));
@@ -99,7 +99,7 @@ for (let g = 0; g < 300; g++) {
 console.log(`  [5] 300 局 / ${rounds} 轮 / ${steps} 手，无异常`);
 
 // ---- 6. flex 套：checkLegal 与 legalActionSet 在首喊 / 未斋 / 斋 / 破斋后全枚举一致 ----
-const RS = require('./dice-rulesets.js');
+const RS = require('../src/dice-rulesets.js');
 const FX = RS.normalize('flex');
 const fxStates = [
   { bid:null, zhai:false },

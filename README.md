@@ -29,16 +29,17 @@
 git clone https://github.com/<你的用户名>/d1-mindgame.git
 cd d1-mindgame
 
-# 1) 起竞技场（静态页 + 同源代理，默认 8899）
-bash run-dice.sh
-# 浏览器打开 http://127.0.0.1:8899/arena.html
+# 1) 一键起竞技场（静态页 + 同源代理，默认 8899）
+bash start.sh
+# 浏览器打开 http://127.0.0.1:8899/web/arena.html
+# 可选：bash start.sh --open 自动打开浏览器；PORT=9000 bash start.sh 换端口
 
 # 2) 配置模型
 #    右上角「模型设置」→ 填 Base URL / 模型 ID / API Key → 保存
 #    或者直接编辑 presets.example.json，复制成 presets.json 后改
 
 # 3) 规则自检（零 token，秒级）
-node test-rules.js
+node tests/test-rules.js
 ```
 
 ### 需要什么
@@ -54,9 +55,9 @@ node test-rules.js
 
 | 方式 | 做法 |
 | --- | --- |
-| URL 参数 | 打开 `http://127.0.0.1:8899/arena.html?gw=http://192.168.1.10:8080/v1` |
+| URL 参数 | 打开 `http://127.0.0.1:8899/web/arena.html?gw=http://192.168.1.10:8080/v1` |
 | 页面设置 | 「模型设置」里直接改每个预设的 Base URL |
-| 环境变量 | `DICE_WB_BASE=http://你的网关:8791 DICE_WB_KEY=sk-xxx bash run-dice.sh` |
+| 环境变量 | `DICE_WB_BASE=http://你的网关:8791 DICE_WB_KEY=sk-xxx bash start.sh` |
 
 > **为什么需要同源代理？** 大多数推理服务不返回 `access-control-allow-origin`，浏览器直连会被 CORS 拦成 `Failed to fetch`。`serve-dice.py` 提供的 `/oa/*` 路径由页面用 `X-Base` 头指定目标端点，浏览器只跟同源说话，绕开 CORS，同时支持 SSE 流式透传。
 
@@ -132,16 +133,16 @@ dice-rulesets.js   规则配置 + 生成给模型看的规则文本  ← 唯一�
 
 ```bash
 # 基线自检（零 token）：阈值 bot 应胜随机 / always-open
-node pk.js --p0 threshold --p1 random --deals 30 --out bot-baseline.jsonl
+node src/pk.js --p0 threshold --p1 random --deals 30 --out runs/bot-baseline.jsonl
 
 # 模型 vs 数学基线
-node pk.js --p0 llm:8080:my-model --p1 threshold --deals 6 --out llm.jsonl
+node src/pk.js --p0 llm:8080:my-model --p1 threshold --deals 6 --out runs/llm.jsonl
 
 # 模型 PK
-node pk.js --p0 llm:8080:model-a --p1 llm:8081:model-b --deals 10 --rules flex
+node src/pk.js --p0 llm:8080:model-a --p1 llm:8081:model-b --deals 10 --rules flex
 
 # 分析
-node analyze.js llm.jsonl
+node src/analyze.js runs/llm.jsonl
 ```
 
 **player 规格**：`threshold[:阈值]`（默认 0.5）/ `random` / `always-open` / `never-open` / `llm:<端口>:<模型名>` / `wb:<模型名>`（本地网关）
@@ -167,7 +168,7 @@ node analyze.js llm.jsonl
 
 ### 落盘约定
 
-- `--out` **默认覆盖写**（早期是追加，同一文件重跑会把两次实验混在一起；要续写显式加 `--append`）
+- `--out` **默认覆盖写**（早期是追加，同一文件重跑会把两次实验混在一起；要续写显式加 `--append`）。落盘建议放 `runs/`（已 gitignore，页面代理的 `calls.jsonl` 与服务日志也在那里）
 - 每次运行生成 `run_id`，首行 `kind=run-start` 写全量配置 + `prompt_hash` + `code_hash`，末行 `kind=summary` 标 `status=complete`；异常退出补 `run-aborted`
 - 所有事件共用主键 `{run_id, deal, swap, game, round, step, seat, phase, ask}`，`call` 与 `game.events` 的真值可按主键直接对齐
 - `analyze.js` 默认只统计 `complete` 的 run（`--all` 强制纳入中断实验）
@@ -238,27 +239,37 @@ node analyze.js llm.jsonl
 ## 项目结构
 
 ```
-dice-rulesets.js   规则集配置 + 生成给模型看的规则文本（单一真源）
-dice-engine.js     规则引擎：合法动作集合、状态推进、结算（UMD，浏览器/Node 共用）
-dice-rules.js      行动解析与合法性措辞（UMD）
-context.js         提示词与上下文构建（UMD，页面与 Node 共用）
-bots.js            基线 bot：阈值 / 随机 / 常开 / 常不开
-llm.js             模型玩家：多臂上下文、截断续写、思考强度
-runner.js          复式赛 + 过程指标 + 配对 bootstrap
-pk.js              CLI 入口
-runlog.js          运行账本与指纹
-analyze.js         落盘分析：博弈质量分桶 + 判断×真值对齐
-test-rules.js      规则属性测试（枚举对拍 + 随机对局）
+start.sh              一键启动：依赖检查 → 起服务 → 就绪检查（--open 打开浏览器）
+serve-dice.py         静态服务 + 同源代理 + 预设 API
+presets.example.json  配置模板（复制成 presets.json 后改；后者含本机信息，不入库）
 
-arena.html/css/js  浏览器竞技场
-serve-dice.py      静态服务 + 同源代理 + 预设 API
-run-dice.sh        起服务
+web/                  浏览器竞技场
+  arena.html/css/js   对弈台前端（加载 ../src/ 的共享模块）
 
+src/                  共享引擎与无头评测
+  dice-rulesets.js    规则集配置 + 生成给模型看的规则文本（单一真源）
+  dice-engine.js      规则引擎：合法动作集合、状态推进、结算（UMD，浏览器/Node 共用）
+  dice-rules.js       行动解析与合法性措辞（UMD）
+  context.js          提示词与上下文构建（UMD，页面与 Node 共用）
+  bots.js             基线 bot：阈值 / 随机 / 常开 / 常不开
+  llm.js              模型玩家：多臂上下文、截断续写、思考强度
+  runner.js           复式赛 + 过程指标 + 配对 bootstrap
+  pk.js               CLI 入口
+  runlog.js           运行账本与指纹
+  analyze.js          落盘分析：博弈质量分桶 + 判断×真值对齐
+
+tests/                回归与离线冒烟（零 token、不触网）
+  test-rules.js       规则属性测试（枚举对拍 + 随机对局）
+  smoke-chat.js       持久对话模式冒烟（桩 fetch）
+  smoke-memory.js     摘要链模式冒烟（桩 fetch）
+  test-echo-prune.js  回声不入库 / 不级联回归
+
+runs/               实验产物（gitignore）：--out 落盘、calls.jsonl、serve.log
 docs/
-  llm-judge-plan.md  LLM 裁判设计规划（仅规划，未实现）
+  llm-judge-plan.md   LLM 裁判设计规划（仅规划，未实现）
 ```
 
-`dice-engine.js` / `dice-rules.js` / `context.js` / `dice-rulesets.js` 都是 **UMD**：浏览器挂到 `window.DiceEngine` 等全局，Node 里 `require()` 同一份实现。**页面与无头评测因此不可能跑出两套行为。**
+`src/dice-engine.js` / `dice-rules.js` / `context.js` / `dice-rulesets.js` 都是 **UMD**：浏览器挂到 `window.DiceEngine` 等全局，Node 里 `require()` 同一份实现。**页面与无头评测因此不可能跑出两套行为。**
 
 ---
 
@@ -277,8 +288,8 @@ docs/
 见 [CONTRIBUTING.md](CONTRIBUTING.md)。最重要的一条纪律：**改动会改指纹**，请在 PR 描述里写明新旧 `prompt_hash` / `ruleset_hash`。
 
 ```bash
-node test-rules.js          # 规则回归，应输出 ALL PASS
-for f in *.js; do node --check "$f"; done
+node tests/test-rules.js    # 规则回归，应输出 ALL PASS
+for f in src/*.js web/*.js tests/*.js; do node --check "$f"; done
 ```
 
 ---

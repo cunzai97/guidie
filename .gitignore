@@ -3,8 +3,8 @@
 *.jsonl
 !examples/*.jsonl
 
-# 页面侧代理落盘的调用流水
-calls.jsonl
+# 实验产物目录：--out 落盘 / 代理调用流水（calls.jsonl）/ 服务日志（serve.log）
+runs/
 
 # 本机运行日志
 *.log

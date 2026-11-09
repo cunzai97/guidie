@@ -1,0 +1,17 @@
+# 统一换行，避免跨平台 diff 噪音
+* text=auto eol=lf
+
+*.js   text eol=lf
+*.py   text eol=lf
+*.sh   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+
+# 模型权重与二进制产物
+*.gguf binary
+*.bin  binary
+
+# 实验数据（体积大，diff 无意义）
+*.jsonl -diff

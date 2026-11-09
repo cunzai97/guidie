@@ -1,0 +1,1475 @@
+/* 鬼骰 ARENA —— 浏览器对弈台
+ *
+ * 与早期观战页的关键差别：
+ *  1. 规则引擎、行动解析、合法性校验、提示词全部来自共享 UMD 模块
+ *     （dice-engine.js / dice-rules.js / context.js），与无头评测同源；
+ *  2. 模型以「预设」形式在设置抽屉里维护，开战前左右各自挑选；
+ *  3. 8k 默认预算 + 截断时带着原思考续写，不再「想深想就输」；
+ *  4. 三次无合法动作默认判负（可切回旧页的接手兜底），与 harness 口径一致。
+ *
+ * 纯浏览器模块；用 node --check 可单独验语法，Node 里 require 不会执行 init。
+ */
+(function (root) {
+'use strict';
+
+const E = root.DiceEngine, R = root.DiceRules, C = root.DiceContext, RS = root.DiceRulesets;
+const doc = typeof document !== 'undefined' ? document : null;
+const $ = id => doc.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const PIPS = { 1:[4], 2:[0,8], 3:[0,4,8], 4:[0,2,6,8], 5:[0,2,4,6,8], 6:[0,2,3,5,6,8] };
+
+/* ---------------- 内置预设与默认设置 ---------------- */
+// 默认网关：可用 ?gw=<base> 覆盖，例如 http://127.0.0.1:8080/v1
+const GW = (function () {
+  try {
+    const q = (typeof location !== 'undefined' && location.search) ? new URLSearchParams(location.search).get('gw') : null;
+    return (q || 'http://127.0.0.1:8791/v1').replace(/\/+$/, '');
+  } catch (e) { return 'http://127.0.0.1:8791/v1'; }
+})();
+const PALETTE = ['#64b9ff','#ff9068','#b78bff','#6bd8a8','#e3bd73','#ff7fa8','#5fd0d8','#9aa8ff'];
+// 内置示例预设：都指向「任意 OpenAI 兼容端点」。用 ?gw= 指定你自己的网关，
+// 或在「模型设置」里改 Base URL / 模型 ID。预算是示例值，按你的端点调整。
+const BUILTIN = [
+  { id:'bl-minimax', alias:'MiniMax M3.1', base:GW, model:'minimax-m3.1-flash', color:'#64b9ff', note:'示例 · OpenAI 兼容端点' },
+  { id:'bl-glm',     alias:'GLM 5.3 Flash', base:GW, model:'glm-5.3-flash',       color:'#ff9068', note:'示例 · OpenAI 兼容端点' },
+  { id:'bl-local',   alias:'本地 llama-server', base:GW, model:'local-model',      color:'#e3bd73', note:'示例 · 本地部署' },
+  { id:'bl-hy',      alias:'HY4 Preview',   base:GW, model:'hy4-preview-f',       color:'#b78bff', note:'示例 · OpenAI 兼容端点' },
+  { id:'bl-hy3',     alias:'HY3 · 免费',    base:GW, model:'hy3',                 color:'#5fd0d8', note:'示例 · 免费额度端点' },
+  { id:'bl-ds',      alias:'DeepSeek V4.1', base:GW, model:'deepseek-v4.1-flash', color:'#6bd8a8', note:'示例 · OpenAI 兼容端点' },
+  { id:'bl-kimi',    alias:'Kimi K3.1 Pro', base:GW, model:'kimi-k3.1-pro',       color:'#ff7fa8', note:'示例 · OpenAI 兼容端点' },
+];
+const DEFAULT_SETTINGS = {
+  target:10, speed:400, variant:'probe', coach:false, summary:true, god:false, strict:true, maxRounds:60,
+  defaultMaxTokens:8192,   // 只是「新建模型 / 配置缺项」时的缺省；每个模型自己的预算始终独立可改
+  theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
+  carry:true,              // 下一局继承上一局的整局复盘摘要（丢弃上一局逐手分析）
+  ctxBudget:24000,         // 局内全量上下文的字符软预算，超出时折叠最早的逐手判断
+  rules:'classic',         // 当前规则集 id（内置 classic / flex，或用户自定义套）
+  ruleSets:[],             // 用户自定义规则套（内置两套不写入这里）
+};
+const DEFAULT_MAX_TOKENS = 8192;
+const LS_KEY = 'd1-arena-store-v1';
+const MEM_KEY = 'd1-arena-memory-v1';   // 跨局摘要链，独立于模型配置，避免污染 presets.json
+
+const state = {
+  presets:[], settings:Object.assign({}, DEFAULT_SETTINGS), seat:{A:'',B:''},
+  storage:'builtin', serverOK:false,
+  G:null, players:null, started:false, running:false, busy:false, god:false,
+  runId:'', gameNo:0, finalizing:false, memos:{A:[],B:[]}, ownMemo:{A:[],B:[]},
+  carry:{A:[],B:[]},        // 本局开局时从上一局继承来的整局复盘摘要（只此一份，无逐手分析）
+  memory:{},                // { [模型ID|提示臂]: {text, at, gameNo} }，按模型与臂隔离
+  lastAct:{A:'—',B:'—'}, thinkMode:{A:'',B:''}, pendingReset:false,
+  flowEl:null, decCols:null, memoCols:null,
+  stats:newStats(), editingId:null, editColor:PALETTE[0], ruleEditingId:null,
+};
+
+function newStats(){
+  return { steps:0, calls:0, truncated:0, ambiguous:0, invalid:0, opens:0,
+           opensCorrect:0, ms:0, tokens:0, netRetries:0, forfeits:0, decs:0, memos:0,
+           slashes:0, toZhai:0, breakZhai:0 };
+}
+function uid(){ return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+function clamp(v, lo, hi, dflt){ const n = +v; return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; }
+const EFFORTS = ['off','low','medium','high'];
+function normalizeEffort(v){ return EFFORTS.indexOf(v) >= 0 ? v : 'off'; }
+function normalizeRuleSets(a){
+  if (!Array.isArray(a)) return [];
+  return a.filter(x => x && typeof x === 'object')
+    .map(x => RS.normalize(x))
+    .filter(x => !RS.BUILTIN[x.id])
+    .slice(0, 20);
+}
+function normalizeSettings(s){
+  const o = Object.assign({}, DEFAULT_SETTINGS, s || {});
+  o.ctxBudget = clamp(o.ctxBudget, 2000, 200000, DEFAULT_SETTINGS.ctxBudget);
+  o.maxRounds = clamp(o.maxRounds, 3, 500, DEFAULT_SETTINGS.maxRounds);
+  o.carry = !!o.carry;
+  o.ruleSets = normalizeRuleSets(o.ruleSets);
+  o.rules = String(o.rules || 'classic');
+  return o;
+}
+function normalizePreset(p, dfltMaxTokens){
+  p = p || {};
+  const eff = normalizeEffort(p.effort || (p.thinking ? 'high' : 'off'));
+  return {
+    id: String(p.id || uid()), alias: String(p.alias || p.model || '未命名模型').slice(0,40),
+    base: String(p.base || '').trim(), model: String(p.model || '').trim(),
+    apiKey: String(p.apiKey || ''), thinking: eff !== 'off', effort: eff,
+    maxTokens: clamp(p.maxTokens, 256, 32768, clamp(dfltMaxTokens, 256, 32768, DEFAULT_MAX_TOKENS)),
+    temperature: clamp(p.temperature, 0, 2, 0.8),
+    color: /^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : PALETTE[0],
+    note: String(p.note || '').slice(0,120),
+  };
+}
+// 设置里选中的规则集（下一局生效）与当前局面锁定的规则集：
+// 开战后一律用 state.G.rules，中途在设置里换规则不会让这一局的合法性口径漂移。
+function selectedRules(){
+  return RS.byId(state.settings.rules, state.settings.ruleSets) || RS.normalize('classic');
+}
+function activeRules(){
+  return (state.G && state.G.rules) ? state.G.rules : selectedRules();
+}
+function allRules(){ return RS.allRules(state.settings.ruleSets); }
+function effortLabel(e){ return { off:'关闭', low:'轻度', medium:'中度', high:'深度' }[normalizeEffort(e)] || '关闭'; }
+function hostOf(base){ return String(base || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
+function presetById(id){ return state.presets.find(p => p.id === id) || null; }
+function seatLabel(w){ return w === 'A' ? '甲方' : '乙方'; }
+function actText(a){
+  if (!a) return '—';
+  if (a.type === 'open') return a.slash ? '劈（开盅 · 积分翻倍）' : '开盅';
+  const tag = a.mode === 'toZhai' ? '（转斋）' : a.mode === 'breakZhai' ? '（破斋）'
+    : (a.face === 1 ? '（斋）' : '');
+  return '喊 ' + a.count + ' 个 ' + a.face + tag;
+}
+// 重写 / 截断续写提示里的行动词汇表：按当前规则集生成，不把新套的动作喂给经典套的模型。
+function actionHint(variant, rules, hasBid){
+  const RR = rules || activeRules(), mk = variant === 'probe';
+  const bid = mk ? '「行动：喊 X 个 Y」' : '「喊 X 个 Y」';
+  const open = mk ? '「行动：开盅」' : '「开盅」';
+  const parts = [bid];
+  if (RR.zhaiMode === 'half') {
+    parts.push(mk ? '「行动：喊 X 个 Y 斋」' : '「喊 X 个 Y 斋」');
+    if (hasBid) parts.push(mk ? '「行动：喊 X 个 Y 破斋」' : '「喊 X 个 Y 破斋」');
+  }
+  if (hasBid) parts.push(open);
+  if (hasBid && RR.slash) parts.push(mk ? '「行动：劈」' : '「劈」');
+  return parts.join(' / ');
+}
+function flash(msg){ $('consoleMeta').textContent = msg; }
+function bump(el){ if (el && el.classList) { el.classList.remove('pop'); el.classList.add('pop'); } }
+
+/* ---------------- 持久化：服务端优先，localStorage 兜底 ---------------- */
+function readLocal(){
+  try { const j = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); return (j && typeof j === 'object') ? j : null; }
+  catch (e) { return null; }
+}
+function writeLocal(){
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ presets:state.presets, settings:state.settings, seat:state.seat })); }
+  catch (e) { /* 隐私模式 / 配额满：静默降级为仅内存 */ }
+}
+function storeBody(){ return JSON.stringify({ presets:state.presets, settings:state.settings, seat:state.seat }); }
+
+/* ---------------- 跨局记忆：只存整局复盘摘要 ----------------
+ * 生命周期的第 3 段：下一局开局时，上一局的逐手判断、逐轮复盘、逐轮亮牌一律丢弃，
+ * 只把「整局复盘摘要」继承过来。按 模型ID|提示臂 隔离，换模型或换臂不会串味。
+ */
+function memKey(w){
+  const p = state.players && state.players[w];
+  return (p ? (p.id + ':' + p.model) : (state.seat[w] || w)) + '|' + state.settings.variant;
+}
+function readMemory(){
+  try { const j = JSON.parse(localStorage.getItem(MEM_KEY) || '{}'); return (j && typeof j === 'object' && !Array.isArray(j)) ? j : {}; }
+  catch (e) { return {}; }
+}
+function writeMemory(){
+  try { localStorage.setItem(MEM_KEY, JSON.stringify(state.memory)); } catch (e) { /* 配额满：仅内存 */ }
+}
+function loadCarry(){
+  state.carry = { A:[], B:[] };
+  if (!state.settings.carry) return;
+  for (const w of ['A','B']) {
+    const m = state.memory[memKey(w)];
+    if (m && m.text) state.carry[w] = [m];
+  }
+}
+function clearMemory(){
+  state.memory = {}; state.carry = { A:[], B:[] };
+  writeMemory();
+  $('saveHint').textContent = '跨局复盘摘要已清空（下一局从空白开始）';
+  renderStorage();
+}
+async function saveStore(){
+  writeLocal();
+  if (!state.serverOK) return;
+  try { await fetch('/api/presets', { method:'PUT', headers:{'Content-Type':'application/json'}, body:storeBody() }); }
+  catch (e) { /* 服务没起时纯本地保存也能用 */ }
+}
+async function loadStore(){
+  let server = null;
+  try {
+    const r = await fetch('/api/presets', { cache:'no-store' });
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.presets)) server = j; }
+  } catch (e) { /* 静态预览 / 服务未启动 */ }
+  state.serverOK = !!server;
+  const local = readLocal();
+  const hasP = x => x && Array.isArray(x.presets) && x.presets.length;
+  const src = hasP(server) ? server : (hasP(local) ? local : null);
+  if (src) {
+    state.presets = src.presets.map(p => normalizePreset(p, (src.settings || {}).defaultMaxTokens));
+    state.settings = normalizeSettings(src.settings);
+    state.seat = Object.assign({A:'',B:''}, src.seat || {});
+    state.storage = (src === server) ? 'server' : 'local';
+  } else {
+    state.presets = BUILTIN.map(p => normalizePreset(p, state.settings.defaultMaxTokens));
+    state.settings = Object.assign({}, DEFAULT_SETTINGS);
+    state.seat = { A:'bl-minimax', B:'bl-glm' };
+    state.storage = 'builtin';
+    await saveStore();
+  }
+  for (const w of ['A','B']) if (!presetById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
+  if (state.seat.A === state.seat.B && state.presets[1]) state.seat.B = state.presets[1].id;
+}
+function renderStorage(){
+  const el = $('storageInfo');
+  const mode = state.serverOK ? '服务端 presets.json（跨浏览器保留）' : '浏览器 localStorage（服务未启动，仅本机）';
+  const memN = Object.keys(state.memory || {}).length;
+  el.innerHTML = '当前存储：<b>' + esc(mode) + '</b><br>已配置 ' + state.presets.length + ' 个模型；'
+    + '修改会即时写入本机，服务可用时同步写回服务端。<br>'
+    + '跨局复盘摘要：本机保存 ' + memN + ' 份（按模型+提示臂隔离，不写入 presets.json）。<br>'
+    + 'API Key 只保存在本机配置里，页面之外不上传。';
+}
+
+/* ---------------- 设置抽屉：模型库 ---------------- */
+function renderPresets(){
+  const box = $('presetList'); box.innerHTML = '';
+  $('presetCount').textContent = String(state.presets.length);
+  if (!state.presets.length) { box.innerHTML = '<div class="empty">还没有模型，点「＋ 新建模型」添加</div>'; return; }
+  for (const p of state.presets) {
+    const d = document.createElement('div');
+    d.className = 'preset' + (state.editingId === p.id ? ' editing' : '');
+    const sw = document.createElement('div'); sw.className = 'swatch'; sw.style.background = p.color;
+    const info = document.createElement('div'); info.className = 'info';
+    const nm = document.createElement('b'); nm.textContent = p.alias;
+    const sub = document.createElement('span'); sub.textContent = p.model + ' · ' + (hostOf(p.base) || '未设置端点');
+    info.appendChild(nm); info.appendChild(sub);
+    const ops = document.createElement('div'); ops.className = 'ops';
+    const bEdit = document.createElement('button'); bEdit.textContent = '编辑'; bEdit.onclick = () => openEditor(p.id);
+    const bDup  = document.createElement('button'); bDup.textContent  = '复制'; bDup.onclick  = () => dupPreset(p.id);
+    const bDel  = document.createElement('button'); bDel.textContent  = '删除'; bDel.className = 'del'; bDel.onclick = () => delPreset(p.id);
+    ops.appendChild(bEdit); ops.appendChild(bDup); ops.appendChild(bDel);
+    d.appendChild(sw); d.appendChild(info); d.appendChild(ops); box.appendChild(d);
+  }
+}
+function renderColors(){
+  const box = $('fColors'); box.innerHTML = '';
+  for (const c of PALETTE) {
+    const b = document.createElement('button');
+    b.style.background = c; b.className = (c === state.editColor) ? 'sel' : '';
+    b.onclick = () => { state.editColor = c; renderColors(); };
+    box.appendChild(b);
+  }
+}
+function openEditor(id){
+  const p = id ? presetById(id) : null;
+  state.editingId = p ? p.id : null;
+  $('editorSec').hidden = false;
+  $('editorTitle').textContent = p ? '编辑模型' : '新建模型';
+  $('fAlias').value = p ? p.alias : '';
+  $('fBase').value  = p ? p.base  : GW;
+  $('fModel').value = p ? p.model : '';
+  $('fKey').value   = p ? p.apiKey : '';
+  $('fMaxTokens').value = String(p ? p.maxTokens : (state.settings.defaultMaxTokens || DEFAULT_MAX_TOKENS));
+  $('fTemp').value = p ? p.temperature : 0.8;
+  if ($('fEffort')) $('fEffort').value = p ? normalizeEffort(p.effort) : 'off';
+  $('fNote').value = p ? p.note : '';
+  state.editColor = p ? p.color : PALETTE[state.presets.length % PALETTE.length];
+  renderColors();
+  $('testResult').textContent = ''; $('testResult').className = 'test-result';
+  renderPresets();
+  if ($('editorSec').scrollIntoView) $('editorSec').scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+function closeEditor(){ state.editingId = null; $('editorSec').hidden = true; renderPresets(); }
+function readForm(){
+  return normalizePreset({
+    id: state.editingId || uid(), alias: $('fAlias').value, base: $('fBase').value,
+    model: $('fModel').value, apiKey: $('fKey').value,
+    maxTokens: $('fMaxTokens').value, temperature: $('fTemp').value,
+    effort: $('fEffort') ? $('fEffort').value : 'off',
+    note: $('fNote').value, color: state.editColor,
+  }, state.settings.defaultMaxTokens);
+}
+function savePreset(){
+  const p = readForm();
+  if (!p.base || !p.model) { $('testResult').textContent = 'Base URL 和模型 ID 不能为空'; $('testResult').className = 'test-result bad'; return; }
+  const i = state.presets.findIndex(x => x.id === p.id);
+  if (i >= 0) state.presets[i] = p; else state.presets.push(p);
+  if (!state.seat.A) state.seat.A = p.id;
+  if (!state.seat.B || state.seat.B === state.seat.A) state.seat.B = p.id;
+  closeEditor(); renderPicks(); saveStore();
+  $('saveHint').textContent = '已保存：' + p.alias;
+}
+function dupPreset(id){
+  const p = presetById(id); if (!p) return;
+  const q = normalizePreset(Object.assign({}, p, { id:uid(), alias:p.alias + ' 副本' }));
+  state.presets.push(q); renderPresets(); renderPicks(); saveStore();
+  $('saveHint').textContent = '已复制为：' + q.alias;
+}
+function delPreset(id){
+  const p = presetById(id); if (!p) return;
+  if (state.started) { $('saveHint').textContent = '对局进行中，请重新布阵后再删模型'; return; }
+  if (doc.defaultView && !doc.defaultView.confirm('删除模型「' + p.alias + '」？')) return;
+  state.presets = state.presets.filter(x => x.id !== id);
+  for (const w of ['A','B']) if (state.seat[w] === id) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
+  if (state.editingId === id) closeEditor(); else renderPresets();
+  renderPicks(); saveStore();
+  $('saveHint').textContent = '已删除：' + p.alias;
+}
+async function pullModels(fill){
+  const base = $('fBase').value.trim(), key = $('fKey').value;
+  const res = $('testResult');
+  if (!base) { res.textContent = '请先填写 Base URL'; res.className = 'test-result bad'; return []; }
+  res.textContent = '正在拉取模型列表…'; res.className = 'test-result';
+  try {
+    const r = await fetch('/oa/models', { headers:{ 'X-Base':base, 'X-Key':key }, cache:'no-store' });
+    const j = await r.json();
+    const list = (j.data || []).map(x => x.id);
+    const dl = $('modelList'); dl.innerHTML = '';
+    for (const id of list) { const o = document.createElement('option'); o.value = id; dl.appendChild(o); }
+    if (fill && !$('fModel').value && list[0]) $('fModel').value = list[0];
+    res.textContent = '可用 ' + list.length + ' 个模型'; res.className = 'test-result ok';
+    return list;
+  } catch (e) {
+    res.textContent = '连不上：' + String(e.message).slice(0,60); res.className = 'test-result bad'; return [];
+  }
+}
+async function testConn(){
+  const model = $('fModel').value.trim();
+  const list = await pullModels(false);
+  const res = $('testResult');
+  if (!list.length) return;
+  if (model && list.indexOf(model) < 0) { res.textContent = '端点可用，但模型 ID 不在列表里（仍可手动使用）'; res.className = 'test-result bad'; }
+  else { res.textContent = '连接正常' + (model ? ' · ' + model : ''); res.className = 'test-result ok'; }
+}
+function exportPresets(){
+  const data = JSON.stringify({ presets:state.presets, settings:state.settings, seat:state.seat }, null, 2);
+  const url = URL.createObjectURL(new Blob([data], { type:'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = 'd1-arena-presets.json';
+  if (a.click) a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  $('saveHint').textContent = '已导出配置文件';
+}
+function importPresets(file){
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const j = JSON.parse(String(rd.result));
+      if (!Array.isArray(j.presets)) throw new Error('缺少 presets 列表');
+      state.presets = j.presets.map(p => normalizePreset(p, (j.settings || {}).defaultMaxTokens));
+      state.settings = normalizeSettings(j.settings);
+      state.seat = Object.assign({A:'',B:''}, j.seat || {});
+      for (const w of ['A','B']) if (!presetById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
+      syncQuick(); bindSettingsValues(); renderPicks(); renderPresets(); saveStore();
+      $('saveHint').textContent = '已导入 ' + state.presets.length + ' 个模型';
+    } catch (e) { $('saveHint').textContent = '导入失败：' + String(e.message).slice(0,80); }
+  };
+  rd.readAsText(file);
+}
+function restoreBuiltin(){
+  for (const b of BUILTIN) if (!state.presets.some(p => p.id === b.id))
+    state.presets.push(normalizePreset(b, state.settings.defaultMaxTokens));
+  renderPicks(); renderPresets(); saveStore();
+  $('saveHint').textContent = '已补回内置预设';
+}
+async function resyncServer(){
+  await loadStore();
+  state.god = !!state.settings.god;
+  syncQuick(); bindSettingsValues(); renderPicks(); renderPresets(); renderStorage(); render();
+  $('saveHint').textContent = '已重新读取服务端配置';
+}
+
+/* ---------------- 规则设置：内置两套 + 任意多套自定义 ----------------
+ * 规则集是配置而非写死文本：内置 classic / flex 只读，用户从任一套「另存副本」后
+ * 可以逐项改参数，规则文本、合法动作集合、提示词指纹都随参数一起变。
+ * 开战后 state.G.rules 锁定，中途换规则只影响下一局，不会让本局合法性口径漂移。
+ */
+const RULE_FIELDS = [
+  ['rId','id'], ['rName','name'], ['rZhaiMode','zhaiMode'], ['rHalfDivisor','halfDivisor'],
+  ['rFaceFree','faceFree'], ['rLockFace','lockFace'], ['rBreakMultiplier','breakMultiplier'],
+  ['rFirstZhai','firstZhai'], ['rFirstFace1','firstFace1'], ['rSlash','slash'],
+  ['rSlashStake','slashStake'], ['rStake','stake'], ['rAutoInfer','autoInfer'],
+  ['rBreakRestoresWild','breakRestoresWild'], ['rFirstMin','firstMin'], ['rFirstMax','firstMax'],
+];
+// 显式列出布尔字段：不依赖 DOM 元素的 .type（受限环境 / DOM 桩里可能没有这个属性）。
+const RULE_CHECKS = new Set(['rFaceFree','rLockFace','rFirstZhai','rFirstFace1',
+  'rBreakRestoresWild','rAutoInfer','rSlash']);
+function ruleOptions(sel, keep){
+  if (!sel) return;
+  const list = allRules();
+  sel.innerHTML = '';
+  for (const r of list) {
+    const o = document.createElement('option');
+    o.value = r.id; o.textContent = r.name + (r.builtin ? '' : ' · 自定义');
+    sel.appendChild(o);
+  }
+  sel.value = list.some(x => x.id === keep) ? keep : 'classic';
+}
+function renderRuleList(){
+  const box = $('ruleList'); if (!box) return;
+  box.innerHTML = '';
+  for (const r of allRules()) {
+    const d = document.createElement('div'); d.className = 'rule-item' + (state.settings.rules === r.id ? ' active' : '');
+    const info = document.createElement('div'); info.className = 'info';
+    const nm = document.createElement('b'); nm.textContent = r.name + (r.builtin ? ' · 内置' : ' · 自定义');
+    const sub = document.createElement('span'); sub.textContent = RS.describe(r) + ' · #' + RS.hash(r);
+    info.appendChild(nm); info.appendChild(sub);
+    const ops = document.createElement('div'); ops.className = 'ops';
+    const bDup = document.createElement('button'); bDup.textContent = '另存副本'; bDup.onclick = () => openRuleEditor(null, r);
+    ops.appendChild(bDup);
+    if (!r.builtin) {
+      const bEdit = document.createElement('button'); bEdit.textContent = '编辑'; bEdit.onclick = () => openRuleEditor(r.id, r);
+      const bDel = document.createElement('button'); bDel.textContent = '删除'; bDel.className = 'del';
+      bDel.onclick = () => delRule(r.id);
+      ops.appendChild(bEdit); ops.appendChild(bDel);
+    }
+    d.appendChild(info); d.appendChild(ops); box.appendChild(d);
+  }
+}
+function renderRules(){
+  ruleOptions($('qRules'), state.settings.rules);
+  ruleOptions($('sRules'), state.settings.rules);
+  renderRuleList();
+  if ($('ruleCount')) $('ruleCount').textContent = String(allRules().length);
+  const rr = selectedRules();
+  const brief = RS.describe(rr) + ' · ruleset_hash #' + RS.hash(rr);
+  if ($('ruleBrief')) $('ruleBrief').textContent = brief;
+  if ($('rulePreview')) $('rulePreview').textContent = C.rulesTextFor(rr);
+}
+function openRuleEditor(id, from){
+  const r = id ? state.settings.ruleSets.find(x => x.id === id) : null;
+  const base = RS.normalize(r || from || selectedRules());
+  state.ruleEditingId = r ? r.id : null;
+  const sec = $('ruleEditorSec'); if (!sec) return;
+  sec.hidden = false;
+  if ($('ruleEditorTitle')) $('ruleEditorTitle').textContent = r ? '编辑自定义规则套' : '从这套另存一份自定义规则';
+  for (const [el, key] of RULE_FIELDS) {
+    const n = $(el); if (!n) continue;
+    const v = (el === 'rId' && !r) ? '' : (el === 'rName' && !r ? base.name + ' · 副本' : base[key]);
+    if (RULE_CHECKS.has(el)) n.checked = !!v; else n.value = String(v == null ? '' : v);
+  }
+  if ($('ruleSaveHint')) $('ruleSaveHint').textContent = '';
+  if (sec.scrollIntoView) sec.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+function closeRuleEditor(){ state.ruleEditingId = null; const s = $('ruleEditorSec'); if (s) s.hidden = true; }
+function readRuleForm(){
+  const o = {};
+  for (const [el, key] of RULE_FIELDS) {
+    const n = $(el); if (!n) continue;
+    o[key] = RULE_CHECKS.has(el) ? !!n.checked : n.value;
+  }
+  o.id = state.ruleEditingId || String(o.id || '').trim() || ('rule_' + Date.now().toString(36));
+  o.name = String(o.name || '自定义规则').trim();
+  o.builtin = false;
+  return RS.normalize(o);
+}
+function saveRule(){
+  const r = readRuleForm();
+  if (RS.BUILTIN[r.id]) { if ($('ruleSaveHint')) $('ruleSaveHint').textContent = '内置两套不可覆盖，请「另存副本」后再改'; return; }
+  const i = state.settings.ruleSets.findIndex(x => x.id === (state.ruleEditingId || r.id));
+  if (i >= 0) state.settings.ruleSets[i] = r; else state.settings.ruleSets.push(r);
+  if (!state.ruleEditingId || state.settings.rules === state.ruleEditingId) state.settings.rules = r.id;
+  closeRuleEditor(); renderRules(); saveStore();
+  if ($('saveHint')) $('saveHint').textContent = '已保存规则套：' + r.name + (state.started ? '（下一局生效）' : '');
+}
+function delRule(id){
+  const r = state.settings.ruleSets.find(x => x.id === id); if (!r) return;
+  if (doc.defaultView && !doc.defaultView.confirm('删除规则套「' + r.name + '」？')) return;
+  state.settings.ruleSets = state.settings.ruleSets.filter(x => x.id !== id);
+  if (state.settings.rules === id) state.settings.rules = 'classic';
+  closeRuleEditor(); renderRules(); saveStore();
+  if ($('saveHint')) $('saveHint').textContent = '已删除：' + r.name;
+}
+function setActiveRules(id){
+  state.settings.rules = RS.byId(id, state.settings.ruleSets) ? id : 'classic';
+  renderRules(); saveStore();
+  if ($('saveHint')) $('saveHint').textContent = state.started
+    ? '规则已切换；当前这局仍用开战时锁定的一套，下一局生效'
+    : '当前规则集已切换';
+}
+
+/* ---------------- 布阵 ---------------- */
+function renderPicks(){
+  for (const w of ['A','B']) {
+    const sel = $('pick' + w), cur = state.seat[w];
+    sel.innerHTML = '';
+    const o0 = document.createElement('option'); o0.value = ''; o0.textContent = '— 选择模型 —'; sel.appendChild(o0);
+    for (const p of state.presets) {
+      const o = document.createElement('option'); o.value = p.id; o.textContent = p.alias + ' · ' + p.model; sel.appendChild(o);
+    }
+    sel.value = cur || '';
+    const p = presetById(cur);
+    $('pickMeta' + w).textContent = p ? (hostOf(p.base) + ' · ' + p.maxTokens + ' tok · 思考' + effortLabel(p.effort)) : '尚未选择';
+    const av = $('pickAvatar' + w);
+    if (p) { av.style.color = p.color; av.style.borderColor = p.color; }
+  }
+  syncButtons();
+}
+function syncQuick(){
+  $('qTarget').value = String(state.settings.target);
+  $('qSpeed').value = String(state.settings.speed);
+  $('qVariant').value = state.settings.variant;
+  if ($('qRules')) $('qRules').value = state.settings.rules;
+  const rr = activeRules();
+  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + rr.name + ' #' + RS.hash(rr) + ' · 臂 ' + state.settings.variant;
+}
+/* ---------------- 外观：暗色 / 亮色 ---------------- */
+function currentTheme(){ return state.settings.theme === 'light' ? 'light' : 'dark'; }
+function applyTheme(){
+  const t = currentTheme();
+  try {
+    const el = doc && doc.documentElement;
+    if (el && el.setAttribute) el.setAttribute('data-theme', t);
+  } catch (e) { /* DOM 桩 / 受限环境：不影响对局 */ }
+  const b = $('btnTheme');
+  if (b) {
+    b.textContent = t === 'light' ? '切换暗色' : '切换亮色';
+    b.title = t === 'light' ? '切回暗色 · 午夜牌桌' : '切换到亮色 · 白纸牌桌';
+    b.classList.toggle('on', t === 'light');
+  }
+  const sel = $('sTheme'); if (sel) sel.value = t;
+}
+function toggleTheme(){
+  state.settings.theme = currentTheme() === 'light' ? 'dark' : 'light';
+  applyTheme(); saveStore();
+  flash(currentTheme() === 'light' ? '已切换到亮色 · 白纸牌桌' : '已切换到暗色 · 午夜牌桌');
+}
+
+function bindSettingsValues(){
+  $('sCoach').checked = !!state.settings.coach;
+  $('sSummary').checked = !!state.settings.summary;
+  $('sCarry').checked = !!state.settings.carry;
+  $('sGod').checked = !!state.settings.god;
+  $('sStrict').checked = !!state.settings.strict;
+  $('sMaxRounds').value = String(state.settings.maxRounds || 60);
+  $('sCtxBudget').value = String(state.settings.ctxBudget || DEFAULT_SETTINGS.ctxBudget);
+  $('sDefaultMaxTokens').value = String(state.settings.defaultMaxTokens || DEFAULT_MAX_TOKENS);
+  renderRules();
+  applyTheme();
+}
+function openDrawer(){ $('mask').classList.add('open'); $('drawer').classList.add('open'); renderPresets(); renderRules(); renderStorage(); }
+function closeDrawer(){ $('mask').classList.remove('open'); $('drawer').classList.remove('open'); }
+
+/* ---------------- 牌桌渲染 ---------------- */
+function dieEl(v, cls){
+  const d = document.createElement('div');
+  d.className = 'die' + (cls ? ' ' + cls : '');
+  if (cls !== 'back') {
+    for (let i = 0; i < 9; i++) {
+      const s = document.createElement('i');
+      if (v && PIPS[v].indexOf(i) >= 0) s.className = 'on';
+      d.appendChild(s);
+    }
+  }
+  return d;
+}
+function renderDice(w, shake){
+  const box = $('dice' + w); box.innerHTML = '';
+  const G = state.G, r = G && G.round;
+  const vals = r ? r.dice[w] : [0,0,0,0,0];
+  const shown = !!(r && (r.revealed || state.god));
+  for (const v of vals) {
+    let cls = '';
+    if (!shown) cls = 'back';
+    else if (r.over && r.result && !r.result.forfeit) {
+      // 斋状态下 1 不是万能：亮牌高亮必须与结算口径一致。
+      const wildOn = !r.result.zhai && r.result.bid.face !== 1;
+      const hit = v === r.result.bid.face || (wildOn && v === 1);
+      cls = hit ? 'hit' : 'faded';
+    }
+    const d = dieEl(shown ? v : 0, cls);
+    if (shake) d.classList.add('shaking');
+    box.appendChild(d);
+  }
+  $('cupNote' + w).textContent = !r ? '未摇骰' : shown ? ('已亮牌 · ' + vals.join(' ')) : '暗骰 · 仅自己可见';
+}
+function renderSeq(r){
+  const box = $('seq'); box.innerHTML = '';
+  if (!r || !r.seq.length) { box.innerHTML = '<span class="seq-empty">暂无喊价</span>'; return; }
+  const lastAt = r.seq[r.seq.length - 1].at;
+  for (const s of r.seq.slice(-10)) {
+    const c = document.createElement('span');
+    c.className = 'seq-chip ' + (s.kind === 'bid' ? (s.who === 'A' ? 'a' : 'b') : 'open') + (s.at === lastAt ? ' last' : '');
+    if (s.kind === 'bid') {
+      const tag = s.mode === 'toZhai' ? '转斋' : s.mode === 'breakZhai' ? '破斋'
+        : (s.face === 1 || s.zhai ? '斋' : '');
+      c.textContent = s.at + '. ' + s.count + '个' + s.face + (tag ? ' · ' + tag : '');
+      if (tag) c.classList.add('zhai');
+    } else {
+      c.textContent = s.at + '. ' + (s.slash ? '劈 ±' + activeRules().slashStake : '开盅');
+      if (s.slash) c.classList.add('slash');
+    }
+    box.appendChild(c);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+function setState(txt, sub, cls){
+  $('stateText').textContent = txt;
+  $('stateSub').textContent = sub;
+  $('matchState').className = 'match-state' + (cls ? ' ' + cls : '');
+}
+function render(){
+  const G = state.G, r = G && G.round, target = state.settings.target;
+  $('roundChip').textContent = !G ? '尚未开桌' : (G.roundNo ? '第 ' + G.roundNo + ' 轮' + (G.over ? ' · 已结束' : ' · 进行中') : '准备开桌');
+  const RR = activeRules();
+  const bv = $('bidValue'), bs = $('bidSub');
+  if (!r) {
+    bv.textContent = '—';
+    bs.textContent = RR.zhaiMode === 'half'
+      ? '每人 5 颗 · 开局可首喊斋 · ' + (RR.slash ? '可劈 ±' + RR.slashStake : '不可劈')
+      : '每人 5 颗 · 1 为万能 · 2<3<4<5<6<1';
+  }
+  else if (!r.bid) {
+    bv.textContent = '无价';
+    bs.textContent = seatLabel(r.turn) + ' 首喊 · 个数 ' + RR.firstMin + '~' + RR.firstMax
+      + '、点数 ' + (RR.firstFace1 ? '1~6' : '2~6') + (RR.firstZhai ? ' · 可直接喊斋' : '');
+  }
+  else {
+    const zt = r.bid.mode === 'toZhai' ? '<small>转斋</small>' : r.bid.mode === 'breakZhai' ? '<small>破斋</small>'
+      : ((r.bid.face === 1 || r.bid.zhai) ? '<small>斋</small>' : '');
+    bv.innerHTML = r.bid.count + ' <small>个</small> ' + r.bid.face + zt;
+    bs.textContent = seatLabel(r.bid.by) + '喊出 · 第 ' + r.bid.at + ' 手'
+      + (RR.zhaiMode === 'half' ? ' · ' + (r.zhai ? '斋：1 不万能' : '未斋：1 万能') : '')
+      + (RR.slash ? ' · 可劈 ±' + RR.slashStake : '');
+  }
+  const tl = $('turnLine');
+  tl.className = 'turn-line' + (r && !r.over ? ' to-' + r.turn.toLowerCase() : '');
+  $('turnText').textContent = !r ? '等待开战' : r.over ? '本轮结算中'
+    : '轮到 ' + seatLabel(r.turn) + (state.players ? ' · ' + state.players[r.turn].alias : '');
+  renderSeq(r);
+
+  for (const w of ['A','B']) {
+    const p = state.players ? state.players[w] : null;
+    const seatPreset = presetById(state.seat[w]);
+    $('name' + w).textContent = p ? p.alias : (seatPreset ? seatPreset.alias : '—');
+    $('sub' + w).textContent = p ? (p.model + ' · ' + hostOf(p.base)) : (seatPreset ? '等待开战' : '等待布阵');
+    const active = !!(r && !r.over && r.turn === w && state.started);
+    $('fighter' + w).classList.toggle('active', active);
+    const st = $('status' + w);
+    if (G && G.over) {
+      if (!G.winner) { st.textContent = '平局'; st.className = 'status-pill'; }
+      else { st.textContent = G.winner === w ? '胜出' : '落败'; st.className = 'status-pill' + (G.winner === w ? ' win' : ''); }
+    }
+    else if (active) { st.textContent = state.busy ? '思考中' : '轮到它'; st.className = 'status-pill busy'; }
+    else { st.textContent = '等待'; st.className = 'status-pill'; }
+    const pt = G ? G.points[w] : 0;
+    $('score' + w).textContent = pt > 0 ? '+' + pt : String(pt);
+    $('rail' + w).style.width = Math.min(100, Math.max(0, pt) / target * 100) + '%';
+    $('lastText' + w).textContent = state.lastAct[w];
+    renderDice(w, false);
+  }
+  const Rf = activeRules();
+  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + Rf.name + ' #' + RS.hash(Rf) + ' · 臂 ' + state.settings.variant;
+}
+
+/* ---------------- 控制台 ---------------- */
+function ensureFlow(){
+  const p = $('panelFlow');
+  if (!state.flowEl || state.flowEl.parentNode !== p) {
+    state.flowEl = document.createElement('div');
+    state.flowEl.className = 'flow';
+    p.appendChild(state.flowEl);
+  }
+  return state.flowEl;
+}
+function addLog(cls, html){
+  const f = ensureFlow(), d = document.createElement('div');
+  d.className = 'flow-item' + (cls ? ' ' + cls : ''); d.innerHTML = html;
+  f.appendChild(d); $('panelFlow').scrollTop = $('panelFlow').scrollHeight;
+}
+/* 决策明细 / 轮末复盘：按甲方、乙方各自成列，同屏左右对照 */
+function makeColumns(panelId, kind){
+  const p = $(panelId);
+  const grid = document.createElement('div'); grid.className = kind + '-grid';
+  p.appendChild(grid);
+  const cols = {};
+  for (const w of ['A','B']) {
+    const col = document.createElement('div'); col.className = kind + '-col ' + w.toLowerCase();
+    const head = document.createElement('div'); head.className = 'col-head';
+    const dot = document.createElement('span'); dot.className = 'col-dot';
+    const nm = document.createElement('b'); nm.textContent = seatLabel(w);
+    const side = document.createElement('span'); side.className = 'col-side';
+    side.textContent = w === 'A' ? 'LEFT' : 'RIGHT';
+    const cnt = document.createElement('i'); cnt.className = 'col-count'; cnt.textContent = '0';
+    head.appendChild(dot); head.appendChild(nm); head.appendChild(side); head.appendChild(cnt);
+    const list = document.createElement('div'); list.className = 'col-list';
+    col.appendChild(head); col.appendChild(list); grid.appendChild(col);
+    cols[w] = { col, list, cnt };
+  }
+  return cols;
+}
+function colsFor(panelId, kind, key){
+  const p = $(panelId);
+  let cols = state[key];
+  if (!cols || !cols.A || !p.children.length || cols.A.col.parentNode !== p.children[0]) {
+    p.innerHTML = '';
+    cols = makeColumns(panelId, kind); state[key] = cols;
+  }
+  return cols;
+}
+function addDec(w, res, label){
+  const cols = colsFor('panelDec', 'dec', 'decCols');
+  const list = cols[w].list, cnt = cols[w].cnt;
+  const d = document.createElement('div');
+  d.className = 'dec-item ' + w.toLowerCase() + (res.invalid ? ' warn' : '');
+  const head = document.createElement('div'); head.className = 'dec-head';
+  const nm = document.createElement('b'); nm.textContent = seatLabel(w) + ' · ' + label;
+  const act = document.createElement('span'); act.className = 'act'; act.textContent = res.invalid ? '（三次未给出动作）' : actText(res.action);
+  const meta = document.createElement('span'); meta.className = 'meta';
+  meta.textContent = res.ms + 'ms · ' + (res.tokens || '—') + ' tok'
+    + (res.tries > 1 ? ' · 重写' + (res.tries - 1) : '')
+    + (res.truncated ? ' · 截断' + res.truncated : '')
+    + (res.ambiguous ? ' · 歧义' : '')
+    + (res.netRetries ? ' · 网络重试' + res.netRetries : '');
+  head.appendChild(nm); head.appendChild(act); head.appendChild(meta); d.appendChild(head);
+  if (res.note) { const n = document.createElement('div'); n.className = 'note'; n.textContent = res.note; d.appendChild(n); }
+  if (res.reason) {
+    const det = document.createElement('details'), sum = document.createElement('summary');
+    sum.textContent = '思考与判断（' + res.reason.length + ' 字）';
+    const pre = document.createElement('pre'); pre.textContent = res.reason;
+    det.appendChild(sum); det.appendChild(pre); d.appendChild(det);
+  }
+  const raw = document.createElement('details'), rs = document.createElement('summary');
+  rs.textContent = '模型原文';
+  const rp = document.createElement('pre'); rp.className = 'act'; rp.textContent = res.raw || '(空)';
+  raw.appendChild(rs); raw.appendChild(rp); d.appendChild(raw);
+  list.appendChild(d); list.scrollTop = list.scrollHeight;
+  cnt.textContent = String(list.children.length);
+  state.stats.decs++; $('decCount').textContent = String(state.stats.decs);
+}
+function addMemo(w, roundNo, text){
+  const cols = colsFor('panelMemo', 'memo', 'memoCols');
+  const list = cols[w].list, cnt = cols[w].cnt;
+  const isMatch = roundNo === '整局';
+  const d = document.createElement('div'); d.className = 'memo-card' + (isMatch ? ' match' : '');
+  const rd = document.createElement('span'); rd.className = 'rd';
+  rd.textContent = isMatch ? ('整局复盘 · 第 ' + state.gameNo + ' 局（带到下一局）') : ('第 ' + roundNo + ' 轮');
+  d.appendChild(rd); d.appendChild(document.createTextNode(text));
+  list.appendChild(d); list.scrollTop = list.scrollHeight;
+  cnt.textContent = String(list.children.length);
+  state.stats.memos++; $('memoCount').textContent = String(state.stats.memos);
+}
+function renderStats(){
+  const s = state.stats, G = state.G;
+  const cards = [
+    ['对局轮数', G ? G.roundNo : 0, '已进行', ''],
+    ['决策手数', s.steps, '模型落子', ''],
+    ['模型调用', s.calls, '含重写与复盘', ''],
+    ['输出 token', s.tokens || '—', '累计', ''],
+    ['平均耗时', s.calls ? Math.round(s.ms / s.calls) + ' ms' : '—', '每步', ''],
+    ['截断次数', s.truncated, 'finish=length', s.truncated ? 'warn' : ''],
+    ['开盅正确', s.opensCorrect + '/' + s.opens, '开盅者赢', 'gold'],
+    ['劈（翻倍）', s.slashes, '±' + activeRules().slashStake + ' 分结算', s.slashes ? 'gold' : ''],
+    ['转斋 / 破斋', s.toZhai + ' / ' + s.breakZhai, '状态切换手数', ''],
+    ['无动作判负', s.forfeits, 'strict 模式', s.forfeits ? 'warn' : ''],
+  ];
+  $('panelStats').innerHTML = '<div class="stats-grid">' + cards.map(c =>
+    '<div class="stat-card"><div class="k">' + esc(c[0]) + '</div><div class="v ' + c[3] + '">' + esc(c[1]) + '</div><div class="s">' + esc(c[2]) + '</div></div>'
+  ).join('') + '</div>';
+}
+function clearConsole(){
+  for (const id of ['panelFlow','panelDec','panelMemo','panelStats']) $(id).innerHTML = '';
+  state.decCols = makeColumns('panelDec', 'dec');
+  state.memoCols = makeColumns('panelMemo', 'memo');
+  state.flowEl = null;
+  $('decCount').textContent = '0'; $('memoCount').textContent = '0';
+  ensureFlow(); renderStats();
+}
+function switchTab(name){
+  const map = { flow:'panelFlow', dec:'panelDec', memo:'panelMemo', stats:'panelStats' };
+  for (const k of Object.keys(map)) {
+    $('tab' + k[0].toUpperCase() + k.slice(1)).classList.toggle('active', k === name);
+    $(map[k]).classList.toggle('active', k === name);
+  }
+}
+
+/* ---------------- 模型调用 ---------------- */
+function metaHeaders(w, phase){
+  return {
+    'X-Arena-Run': state.runId, 'X-Arena-Seat': w,
+    'X-Arena-Round': String(state.G ? state.G.roundNo : 0), 'X-Arena-Phase': phase,
+    'X-Arena-Model': state.players ? state.players[w].model : '',
+    'X-Arena-Ruleset': RS.hash(activeRules()),
+    'X-Arena-Effort': state.players ? normalizeEffort(state.players[w].effort) : 'off',
+  };
+}
+async function callStream(p, messages, onDelta, w, phase, budget){
+  const body = {
+    model:p.model, messages, temperature:p.temperature,
+    max_tokens: budget || p.maxTokens, stream:true,
+  };
+  // 每个模型独立的思考强度（off / low / medium / high）。
+  // 本地 llama-server 用 chat_template_kwargs.thinking_budget，远端网关用 reasoning_effort；
+  // 两个字段都带，与 CLI llm.js 的 applyEffort 口径一致，不认识的端点会忽略多余字段。
+  const eff = normalizeEffort(p.effort);
+  const local = /(127\.0\.0\.1|localhost):(1235|1236|1240)\b/.test(p.base || '');
+  if (eff !== 'off') {
+    const THINK_BUDGET = { low:1024, medium:4096, high:12288 };
+    body.chat_template_kwargs = { enable_thinking:true, thinking_budget:THINK_BUDGET[eff] || 4096 };
+    body.reasoning_effort = eff;
+  } else if (local) {
+    body.chat_template_kwargs = { enable_thinking:!!p.thinking };
+  }
+  const headers = Object.assign({ 'Content-Type':'application/json', 'X-Base':p.base || '', 'X-Key':p.apiKey || '' }, metaHeaders(w, phase));
+  const t0 = Date.now();
+  const r = await fetch('/oa/chat/completions', { method:'POST', headers, body:JSON.stringify(body) });
+  if (!r.ok) {
+    let msg = ''; try { msg = JSON.stringify(await r.json()).slice(0,160); } catch (e) {}
+    throw new Error(p.alias + ' 接口 ' + r.status + ' ' + msg);
+  }
+  let content = '', reason = '', finish = null, tokens = null;
+  const eat = j => {
+    if (j.error) throw new Error(p.alias + ' 接口报错：' + JSON.stringify(j.error).slice(0,160));
+    if (j.usage && j.usage.completion_tokens != null) tokens = j.usage.completion_tokens;
+    const ch = (j.choices || [])[0] || {}, d = ch.delta || {};
+    if (ch.finish_reason) finish = ch.finish_reason;
+    if (d.reasoning_content) { reason += d.reasoning_content; if (onDelta) onDelta('reason', d.reasoning_content); }
+    if (d.content) { content += d.content; if (onDelta) onDelta('content', d.content); }
+  };
+  if (r.body) {
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const chunk = await rd.read();
+      if (chunk.done) break;
+      buf += dec.decode(chunk.value, { stream:true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const ln of lines) {
+        const s = ln.trim();
+        if (!s.startsWith('data:')) continue;
+        const pl = s.slice(5).trim();
+        if (!pl || pl === '[DONE]') continue;
+        let j; try { j = JSON.parse(pl); } catch (e) { continue; }
+        eat(j);
+      }
+      if (finish) break;
+    }
+    try { rd.cancel(); } catch (e) {}
+  } else eat(await r.json());
+  if (!finish && !content) throw new Error(p.alias + ' 流中断：没等到结束标记，也没拿到内容');
+  return { raw:content.trim(), reason:reason.trim(), finish, tokens, ms:Date.now() - t0 };
+}
+async function callWithRetry(p, messages, onDelta, w, phase, budget, onRetry, maxTries){
+  const N = maxTries || 4;
+  let last = null;
+  for (let i = 1; i <= N; i++) {
+    try { const o = await callStream(p, messages, onDelta, w, phase, budget); o.netRetries = i - 1; return o; }
+    catch (e) {
+      last = e; if (i === N) break;
+      const wait = Math.min(2000 * i, 8000);
+      if (onRetry) onRetry(i, e, wait);
+      await sleep(wait);
+    }
+  }
+  throw last;
+}
+
+/* ---------------- 实时推演 ---------------- */
+function thinkStart(w, label){
+  const box = $('think' + w);
+  box.innerHTML = ''; box.classList.add('typing');
+  state.thinkMode[w] = '';
+  $('thinkMeta' + w).textContent = label;
+}
+function thinkPush(w, kind, txt){
+  const box = $('think' + w);
+  const mode = kind === 'reason' ? 'reason' : 'content';
+  if (state.thinkMode[w] !== mode) {
+    state.thinkMode[w] = mode;
+    box.textContent += (box.textContent ? '\n' : '') + (mode === 'reason' ? '── 原生思考 ──\n' : '── 判断与行动 ──\n');
+  }
+  box.textContent = (box.textContent + txt).slice(-12000);   // 8k 预算下的长思考也看得全
+  box.scrollTop = box.scrollHeight;
+}
+function thinkEnd(w, meta){
+  $('think' + w).classList.remove('typing');
+  $('thinkMeta' + w).textContent = meta || '';
+}
+function thinkNote(w, msg){
+  const box = $('think' + w);
+  box.textContent = (box.textContent ? box.textContent + '\n' : '') + '〔' + msg + '〕\n';
+  state.thinkMode[w] = '';
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---------------- 一手决策 ---------------- */
+function lastActionLine(raw){
+  const lines = String(raw || '').trim().split('\n').map(s => s.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : '';
+}
+function userText(w, variant){
+  // 局面事实（骰子 / 比分 / 本轮喊价 / 合法菜单）交给共享 buildUser；
+  // 历史段一律关掉（0=不输出），改由 gameContextText 全量摊开，避免同一件事说两遍。
+  let u = C.buildUser(state.G, w, { variant, ownMemoLimit:0, historyLimit:0, rules:activeRules() });
+  const ctx = gameContextText(state, w, { budget:state.settings.ctxBudget });
+  if (ctx) u += '\n\n' + ctx;
+  return u;
+}
+async function decide(w, label){
+  const G = state.G, r = G.round, p = state.players[w], variant = state.settings.variant;
+  const RR = activeRules();
+  const sys = C.buildSystem(G.roundTarget, { variant, coach:state.settings.coach, rules:RR });
+  let msgs = [{ role:'system', content:sys }, { role:'user', content:userText(w, variant) }];
+  let action = null, tries = 0, ms = 0, tokens = 0, netSum = 0, truncated = 0, ambiguous = false, note = '';
+  const raws = [], reasons = [];
+
+  thinkStart(w, label);
+  while (tries < 3) {
+    tries++;
+    $('thinkMeta' + w).textContent = label + ' · 第 ' + tries + ' 次';
+    thinkNote(w, '请求模型 ' + p.alias);
+    const out = await callWithRetry(p, msgs, (k,t) => thinkPush(w,k,t), w, 'decide', null,
+      (i,e,wait) => {
+        thinkNote(w, '接口没响应（' + String(e.message).slice(0,60) + '）· ' + (wait/1000) + 's 后第 ' + i + ' 次重试');
+        addLog('ow', seatLabel(w) + ' 接口重试（第 ' + i + ' 次）');
+      });
+    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
+    state.stats.calls++;
+    ms += out.ms; netSum += out.netRetries || 0;
+    if (out.tokens != null) tokens += out.tokens;
+    if (out.finish === 'length') { state.stats.truncated++; truncated++; }
+    raws.push(out.raw || '(空)');
+    if (out.reason) reasons.push('【第' + tries + '次 · 原生思考】\n' + out.reason);
+    const judge = R.extractJudgment(out.raw);
+    if (judge && !out.reason) reasons.push('【第' + tries + '次 · 判断】' + judge);
+
+    // 截断且末行不是完整行动行时，绝不把分析中的「N 个 M」误当落子
+    const isCut = out.finish === 'length' && !R.ACTION_LINE_RE.test(lastActionLine(out.raw));
+    const pa = isCut ? { action:null, ambiguous:false, text:'', dropped:0 } : R.parseAction(out.raw);
+    if (pa.ambiguous) { ambiguous = true; state.stats.ambiguous++; }
+    if (pa.action) {
+      const why = R.checkLegal(r, pa.action);
+      if (!why) { action = pa.action; break; }
+      note = '「' + (pa.text || '') + '」执行不了：' + why;
+      msgs = msgs.concat([
+        { role:'assistant', content:out.raw },
+        { role:'user', content:'上次你写的是「' + String(out.raw).slice(0,80) + '」，这一手执行不了：' + why
+            + '。请只回一行行动：' + actionHint(variant, RR, !!r.bid) + '。' },
+      ]);
+    } else {
+      note = isCut ? '输出被截断，未拿到完整行动行' : '没看出要做什么';
+      const words = actionHint(variant, RR, !!r.bid);
+      const hint = isCut
+        ? '你上一段回答被输出长度截断了。接着它原来的思路往下想完，立即做出决断，不要从头重来、不要只写分析。最后另起一行给出行动：' + words + '。'
+        : '上次你写的是「' + String(out.raw).slice(0,80) + '」，我没看出你要做什么。请只回一行行动：' + words + '。';
+      msgs = msgs.concat([{ role:'assistant', content:out.raw }, { role:'user', content:hint }]);
+      if (isCut) thinkNote(w, '输出被截断 · 带着原思考续写一次');
+    }
+  }
+  if (!action) state.stats.invalid++;
+  return { action, tries, ms, tokens, netRetries:netSum, truncated, ambiguous, note,
+           raw:raws.join(' | '), reason:reasons.join('\n\n'), invalid:!action };
+}
+
+/* ---------------- 结算 / 复盘 ---------------- */
+function settleForfeit(G, loser){
+  const win = E.other(loser), r = G.round;
+  const stake = E.rulesOf(r).stake;            // 判负按普通开盅结算，不按劈
+  G.points[win] += stake; G.points[loser] -= stake; G.losses[loser]++; G.lastLoser = loser;
+  r.over = true; r.revealed = true;
+  const result = {
+    forfeit:true, loser, winner:win, stake, slash:false, zhai:!!(r.bid && r.bid.zhai),
+    bid:r.bid || { by:loser, count:0, face:0, at:0 }, opener:null,
+    actual:0, wild:0, truth:false, dice:r.dice,
+  };
+  r.result = result;
+  G.history.push(Object.assign({ no:r.no }, result));
+  if (G.points[win] >= G.roundTarget) { G.over = true; G.winner = win; }
+  return result;
+}
+function showReveal(res, forfeit){
+  const el = $('reveal'), b = res.bid || {}, k = res.stake || 1;
+  const tag = b.mode === 'toZhai' ? '（转斋）' : b.mode === 'breakZhai' ? '（破斋）' : (res.zhai ? '（斋）' : '');
+  const detail = forfeit
+    ? seatLabel(res.loser) + ' 三次未给出合法行动'
+    : seatLabel(b.by) + ' 喊 ' + b.count + ' 个 ' + b.face + tag + ' · 全场实际 ' + res.actual + ' 个 · ' + (res.truth ? '够' : '不够');
+  el.innerHTML = '<div class="rv-title">' + (forfeit ? '判 负' : res.slash ? '劈 · 开 盅' : '开 盅') + '</div>'
+    + '<div class="rv-detail">' + esc(detail) + (res.slash ? ' · 积分翻倍 ±' + k : '') + '</div>'
+    + '<div class="rv-winner">本轮 <b>' + seatLabel(res.winner) + '</b> +' + k + ' / ' + seatLabel(res.loser) + ' −' + k + '</div>';
+  el.hidden = false;
+}
+function cleanSum(t){
+  let s = String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
+  const i = s.indexOf('\n\n');
+  if (i > 0) { const a = s.slice(0,i).trim(), b = s.slice(i+2).trim(); if (a && a === b) s = a; }
+  // 只做工程护栏：400 字复盘远够用，留三倍余量，避免把超长笔记整段灌回上下文。
+  return s.slice(0, 1200);
+}
+
+/* ---------------- 局内上下文：三段生命周期的第 1、2 段 ----------------
+ * 用户定义的口径：
+ *   ① 当局（本局）内，每一手都能看到「历史回合摘要」+「当局的所有分析」——全量，不再用
+ *      slice(-3)/slice(-10)/按轮窗口悄悄截断；
+ *   ② 轮末复盘与整局结束时的复盘，都「继承当前上下文」：包含历史复盘与当局分析；
+ *   ③ 只有到下一局才丢弃上一局的逐手具体分析，替换为整局复盘摘要。
+ *
+ * gameContextText 是这三处的单一真源：决策、轮末复盘、整局复盘都拼同一段文本，
+ * 不各写一份。内容只有模型自己写过的判断/复盘和已亮牌的公开事实，不替它下结论。
+ * 做成纯函数（st / w / opts 全靠参数）便于 Node 侧离线验证。
+ */
+function factLine(h, w){
+  const who = x => (x === w ? '你' : '对手');
+  const k = h.stake || 1, pm = ' +' + k + ' / ', mm = ' −' + k + '。';
+  if (h.forfeit) return '  第' + h.no + '轮结算：' + who(h.loser) + '未能给出合法行动，判负 → '
+    + who(h.winner) + pm + who(h.loser) + mm;
+  const tag = h.bid.mode === 'toZhai' ? '（转斋）' : h.bid.mode === 'breakZhai' ? '（破斋）' : (h.zhai ? '（斋）' : '');
+  const wild = !h.zhai && h.bid.face !== 1 && h.wild ? '（含万能1 ' + h.wild + ' 颗）' : '';
+  return '  第' + h.no + '轮结算：' + who(h.bid.by) + '喊 ' + h.bid.count + '个' + h.bid.face + tag
+    + '，' + who(h.opener) + (h.slash ? '劈（积分翻倍）' : '开盅')
+    + '，全场实际 ' + h.actual + ' 个' + wild + '（' + (h.truth ? '够' : '不够') + '）→ '
+    + who(h.winner) + pm + who(h.loser) + mm
+    + (h.dice ? ' 亮牌：你 [' + h.dice[w].join(' ') + ']，对手 [' + h.dice[w === 'A' ? 'B' : 'A'].join(' ') + ']。' : '');
+}
+function gameContextText(st, w, opts){
+  const o = opts || {}, G = st.G || {}, L = [];
+  const budget = o.budget == null ? 24000 : o.budget;
+  const carried = st.carry && st.carry[w] ? st.carry[w] : [];
+  if (carried.length) {
+    L.push('【上一局留给你的整局复盘摘要（本局开局时继承，上一局的逐手分析已不再保留）】');
+    for (const c of carried) L.push('  第' + (c.gameNo || '?') + '局：' + c.text);
+  }
+  const memos = st.memos && st.memos[w] ? st.memos[w] : [];
+  const own = st.ownMemo && st.ownMemo[w] ? st.ownMemo[w] : [];
+  const hist = G.history || [];
+  // 轮末复盘时 skipFactRound = 当前轮：本轮结算由 buildSummaryPrompt 单独给出，避免重复。
+  const facts = hist.filter(h => o.skipFactRound == null || h.no !== o.skipFactRound);
+  const rounds = [];
+  const seen = {};
+  for (const h of hist) seen[h.no] = true;
+  for (const m of memos) seen[m.round] = true;
+  for (const a of own) seen[a.round] = true;
+  for (const no of Object.keys(seen).map(Number).sort((x, y) => x - y)) rounds.push(no);
+
+  const full = [];
+  for (const no of rounds) {
+    const b = ['  第' + no + '轮：'];
+    const acts = own.filter(x => x.round === no);
+    if (acts.length) {
+      b.push('    你这一轮每一手的判断与落子：');
+      for (const x of acts) b.push('      判断：' + (x.judgment || '（无）') + ' → ' + x.action);
+    }
+    const f = facts.find(h => h.no === no);
+    if (f) b.push('    亮牌后的事实：\n      ' + factLine(f, w).trim());
+    const memo = memos.find(x => x.round === no);
+    if (memo) b.push('    你写下的轮末复盘：' + memo.text);
+    full.push({ no, full:b.join('\n'),
+      slim:b.filter(s => !s.startsWith('      判断：') && !s.startsWith('    你这一轮每一手的判断与落子：')).join('\n') });
+  }
+  const head = ['【本局完整记录（从第一手起，按轮展开：你每一手的判断与落子 / 亮牌后的事实 / 你写下的复盘）】'];
+  const cap = Math.max(0, budget - L.join('\n').length - head.join('\n').length);
+  let sum = 0, folded = 0;
+  const chosen = [];
+  // 从最近轮往前保留完整块；只有超出预算时，更早的轮才降级为「复盘 + 事实」的精简块。
+  for (let i = full.length - 1; i >= 0; i--) {
+    const blk = full[i];
+    if (sum + blk.full.length <= cap) { chosen.unshift(blk.full); sum += blk.full.length; }
+    else { chosen.unshift(blk.slim); sum += blk.slim.length; folded++; }
+  }
+  if (folded) head.push('  （上下文达到预设上限，最早 ' + folded + ' 轮的「逐手判断」已折叠；各轮复盘与亮牌事实完整保留。）');
+  if (rounds.length) L.push(head.concat(chosen).join('\n'));
+  return L.join('\n\n');
+}
+// 向后兼容的旧入口：轮末复盘的回看段仍叫 recallText，但现在是全量上下文。
+function recallText(st, w, opts){
+  return gameContextText(st, w, Object.assign({ skipFactRound: st.G ? st.G.roundNo : null }, opts || {}));
+}
+
+// 复盘请求的消息体。中性 system 是刻意的：不带 FORMAT_PROBE，避免模型把复盘写成「行动：」行。
+// ctx 允许 Node 侧注入 context.js 做离线验证（浏览器里用闭包中的共享模块）。
+function summaryMessages(st, w, res, variant, ctx, opts){
+  const CX = ctx || C;
+  const recall = recallText(st, w, opts);
+  const user = (recall ? recall + '\n\n' : '') + CX.buildSummaryPrompt(st.G, w, res, { variant, rules:st.G && st.G.rules });
+  return [{ role:'system', content:'你正在复盘一轮大话骰对局。' }, { role:'user', content:user }];
+}
+
+// 整局结束的复盘：继承与决策 / 轮末复盘同一份全量上下文，产出一段带到下一局的摘要。
+function matchSummaryMessages(st, w, variant, ctx, opts){
+  const CX = ctx || C;
+  const recall = gameContextText(st, w, opts);
+  const user = (recall ? recall + '\n\n' : '') + CX.buildMatchSummaryPrompt(st.G, w, { variant, rules:st.G && st.G.rules });
+  return [{ role:'system', content:'你正在复盘一整局大话骰对局。' }, { role:'user', content:user }];
+}
+
+// 复盘输出统一走这里：两次机会，无效输出把原文回灌再改；吃模型完整预算，不设小预算硬截断。
+async function requestSummary(w, msgs, tag){
+  const p = state.players[w];
+  let text = '';
+  for (let i = 0; i < 2 && !text; i++) {
+    try {
+      const out = await callWithRetry(Object.assign({}, p, { thinking:false, effort:'off' }),
+        msgs, null, w, tag, p.maxTokens, null, 2);
+      text = cleanSum(out.raw) || cleanSum(out.reason);
+      if (!text) msgs = msgs.concat([
+        { role:'assistant', content: out.raw || out.reason || '（空）' },
+        { role:'user', content:'请只写一段你自己的复盘总结，别复述提示。' },
+      ]);
+    } catch (e) { /* 复盘失败不打断对局 */ }
+  }
+  return text;
+}
+// 双方复盘互不依赖：并发发出，等两份都回来再一起写回上下文，避免任何一方读到对方这轮的复盘。
+async function summarizeRound(res){
+  const roundNo = state.G.roundNo;
+  const jobs = ['A','B'].map(async w => {
+    const msgs = summaryMessages(state, w, res, state.settings.variant, null, { budget:state.settings.ctxBudget });
+    const text = await requestSummary(w, msgs, 'summary') || '（本轮未形成复盘。）';
+    return { w, text };
+  });
+  const out = await Promise.all(jobs);
+  for (const x of out) {
+    state.memos[x.w].push({ round:roundNo, text:x.text });
+    addMemo(x.w, roundNo, x.text);
+  }
+}
+// 整局结束：继承与局内决策 / 轮末复盘同一份全量上下文，产出唯一一份带到下一局的摘要。
+async function summarizeMatch(){
+  const myRun = state.runId, myGame = state.gameNo;
+  // 复查时用户可能已经「重新布阵」或开了下一局，快照校验避免把旧局摘要写进新局。
+  const alive = () => state.runId === myRun && !!state.players && !!state.G && state.started;
+  if (!alive()) return;
+  const jobs = ['A','B'].map(async w => {
+    const msgs = matchSummaryMessages(state, w, state.settings.variant, null, { budget:state.settings.ctxBudget });
+    const text = await requestSummary(w, msgs, 'match-summary');
+    return { w, text };
+  });
+  const out = await Promise.all(jobs);   // 双方的整局复盘并行，不做串行等待
+  for (const x of out) {
+    if (!alive()) break;
+    const w = x.w, text = x.text;
+    if (text) {
+      state.memory[memKey(w)] = { text, at:Date.now(), gameNo:myGame };
+      state.carry[w] = [{ text, gameNo:myGame }];
+      addMemo(w, '整局', text);
+      addLog('muted', seatLabel(w) + ' 整局复盘已生成，下一局只继承这段摘要');
+    } else {
+      addLog('ow', seatLabel(w) + ' 整局复盘未形成，下一局从空白开始');
+    }
+  }
+  writeMemory();
+}
+async function afterOpen(res, forfeit){
+  const G = state.G, b = res.bid, k = res.stake || 1;
+  const delta = ' +' + k + ' / ' + seatLabel(res.loser) + ' −' + k;
+  const pointStr = '（积分 ' + G.points.A + ' : ' + G.points.B + '）';
+  const zt = b.mode === 'toZhai' ? '（转斋）' : b.mode === 'breakZhai' ? '（破斋）' : (res.zhai ? '（斋）' : '');
+  if (forfeit) {
+    addLog('rs', '判负结算 → ' + seatLabel(res.winner) + delta + pointStr);
+  } else {
+    const act = res.slash ? '劈' : '开盅';
+    addLog('ow', seatLabel(res.opener) + ' ' + act + (res.slash ? '（积分翻倍 ±' + k + '）' : '')
+      + '，质疑 ' + seatLabel(b.by) + ' 的 ' + b.count + ' 个 ' + b.face + zt);
+    let d = '全场 ' + b.face + ' 实际有 <b>' + res.actual + '</b> 个';
+    if (!res.zhai && b.face !== 1 && res.wild) d += '（含万能 1 共 ' + res.wild + ' 颗）';
+    d += '，' + (res.truth ? '够 ' : '不足 ') + b.count + ' 个';
+    addLog('rs', act + '结果：' + d + ' → ' + seatLabel(res.winner) + delta + pointStr);
+  }
+  if (!forfeit) {
+    state.stats.opens++;
+    if (res.winner === res.opener) state.stats.opensCorrect++;
+    if (res.slash) state.stats.slashes++;
+  }
+  showReveal(res, forfeit); render(); renderStats();
+  await sleep(Math.max(500, Math.min(1600, state.settings.speed || 400)));
+  $('reveal').hidden = true;
+  // 最后一轮同样要做轮末复盘：整局复盘继承的是「历史复盘 + 当局分析」，不能缺最后一段。
+  if (state.settings.summary) {
+    addLog('muted', '第 ' + G.roundNo + ' 轮结束，双方复盘总结中…');
+    flash('轮末复盘中…');
+    await summarizeRound(res);
+    flash('准备就绪');
+  }
+  if (G.over) { addLog('rd', '对局结束：' + seatLabel(G.winner) + ' 胜出'); await finishMatch(); return; }
+  render();
+}
+async function finishMatch(){
+  state.running = false;
+  const w = state.G.winner, score = state.G.points.A + ' : ' + state.G.points.B;
+  setState('对局结束', (w ? seatLabel(w) + ' 获胜' : '平局') + ' · ' + score, 'done');
+  flash('对局结束 · ' + (w ? seatLabel(w) + ' 获胜' : '平局'));
+  syncButtons(); render();
+  // 整局复盘是生命周期第 2 段，独立于「每轮复盘」开关；只有两者都关才跳过。
+  if (state.settings.summary || state.settings.carry) {
+    state.finalizing = true; syncButtons();
+    addLog('muted', '整局结束，双方继承本局全部记录做整局复盘…');
+    flash('整局复盘中…');
+    try { await summarizeMatch(); }
+    finally { state.finalizing = false; syncButtons(); }
+    flash('对局结束 · ' + (w ? seatLabel(w) + ' 获胜' : '平局'));
+    render();
+  }
+}
+
+/* ---------------- 一步 / 连播 ---------------- */
+async function stepOnce(){
+  const G = state.G;
+  if (!G || G.over) return;
+  if (!G.round || G.round.over) {
+    // 零和积分在势均力敌时会来回震荡，给观战页一个硬上限，按当前积分判胜/平局
+    if (G.roundNo >= (state.settings.maxRounds || 60)) {
+      const win = G.points.A === G.points.B ? null : (G.points.A > G.points.B ? 'A' : 'B');
+      G.over = true; G.winner = win;
+      addLog('rd', '达到最多 ' + (state.settings.maxRounds || 60) + ' 轮，按积分判定：'
+        + (win ? seatLabel(win) + ' 胜出' : '平局') + '（' + G.points.A + ' : ' + G.points.B + '）');
+      await finishMatch(); return;
+    }
+    E.startRound(G);
+    const r = G.round;
+    addLog('rd', '第 ' + r.no + ' 轮 · ' + seatLabel(r.turn) + ' 先喊');
+    addLog('muted', '摇骰完成' + (state.god ? ' · 甲 [' + r.dice.A.join(' ') + '] ｜ 乙 [' + r.dice.B.join(' ') + ']' : ''));
+    renderDice('A', true); renderDice('B', true);
+    render(); return;
+  }
+  const r = G.round, w = r.turn, RR = activeRules();
+  render();
+  // 经典套无价可喊时沿用「自动开盅」，避免模型被判负；新套多了「劈」，必须留给模型自己选。
+  if (!E.canBid(r) && !RR.slash) {
+    addLog('muted', seatLabel(w) + ' 已无价可喊，只能开盅');
+    await afterOpen(E.resolveOpen(G, w, { slash:false })); return;
+  }
+  const label = r.bid ? '行动' : '首喊';
+  const res = await decide(w, label);
+  // 漏写「斋 / 破斋」时按当前规则集自动推断：决策明细与真实落子必须是同一个动作。
+  const acted = (res.action && res.action.type === 'bid') ? E.normalizeAction(r, res.action) : res.action;
+  const shown = Object.assign({}, res, { action:acted });
+  state.stats.steps++; state.stats.ms += res.ms; state.stats.tokens += res.tokens;
+  state.stats.netRetries += res.netRetries;
+  addDec(w, shown, label); renderStats();
+  // 当局的所有分析整局保留，不再按轮裁掉旧手；展示层由 gameContextText 的 ctxBudget 折叠，
+  // 且折叠发生在最早那几轮、会明确标注，不会静默丢掉本局过程。
+  state.ownMemo[w].push({ round:G.roundNo, judgment:R.extractJudgment(res.raw).slice(0,400), action:actText(acted) });
+  if (acted && acted.type === 'open') {
+    await afterOpen(E.resolveOpen(G, w, { slash:!!acted.slash })); return;
+  }
+  if (acted) {
+    E.applyBid(G.round, w, acted);          // 完整动作对象：mode / slash 不再丢失
+    state.lastAct[w] = actText(acted);
+    if (acted.mode === 'toZhai') state.stats.toZhai++;
+    else if (acted.mode === 'breakZhai') state.stats.breakZhai++;
+    addLog('', seatLabel(w) + ' <b>' + esc(actText(acted)) + '</b>');
+    addLog('muted', res.ms + ' ms · ' + (res.tokens || '—') + ' tok'
+      + (res.tries > 1 ? ' · 重写 ' + (res.tries - 1) + ' 次' : '')
+      + (res.truncated ? ' · 有截断' : '') + (res.ambiguous ? ' · 解析歧义' : ''));
+    bump($('lastAct' + w)); render(); return;
+  }
+  if (state.settings.strict) {
+    addLog('ow', '⚠ ' + seatLabel(w) + ' 三次都没给出可执行的动作，判负（与无头评测口径一致）');
+    state.stats.forfeits++;
+    await afterOpen(settleForfeit(G, w), true); return;
+  }
+  // 兜底也走权威合法动作集合，别把转斋 / 破斋动作在 legalCounts×legalFaces 的旧视图里弄丢。
+  const bids = E.legalActions(r).filter(a => a.type === 'bid');
+  if (!bids.length) {
+    addLog('muted', seatLabel(w) + ' 无价可喊，只能开盅');
+    await afterOpen(E.resolveOpen(G, w, { slash:false })); return;
+  }
+  bids.sort((x,y) => x.count - y.count || E.ord(x.face) - E.ord(y.face));
+  addLog('ow', '⚠ ' + seatLabel(w) + ' 三次没给出动作，按最小合法加价接手：' + actText(bids[0]));
+  E.applyBid(G.round, w, bids[0]);
+  state.lastAct[w] = actText(bids[0]);
+  render();
+}
+async function runStep(){
+  if (state.busy || !state.G || state.G.over) return false;
+  state.busy = true;
+  const w = (state.G.round && !state.G.round.over) ? state.G.round.turn : (state.G.firstBidder || 'A');
+  setState('对局进行中', '第 ' + state.G.roundNo + ' 轮 · ' + seatLabel(w) + ' 思考中', 'live');
+  let ok = true;
+  try { await stepOnce(); }
+  catch (e) {
+    ok = false; state.running = false;
+    addLog('ow', '⚠ ' + esc(String(e.message).slice(0,160)) + ' · 局面不变，点「继续」接着打');
+    flash('已暂停 · ' + String(e.message).slice(0,60));
+  }
+  finally {
+    state.busy = false;
+    // 「重新布阵」在模型思考中途被点击：等这一手彻底落地后再清空，避免异步写 null 局面
+    if (state.pendingReset) { doReset(); return; }
+    render();
+  }
+  return ok;
+}
+async function loop(){
+  if (state.running) return;
+  state.running = true; syncButtons();
+  while (state.running) {
+    if (!state.G || state.G.over) break;
+    if (!await runStep()) break;
+    if (!state.running) break;
+    const d = state.settings.speed;
+    if (d) await sleep(d);
+  }
+  state.running = false; syncButtons();
+}
+function syncButtons(){
+  const over = !!(state.G && state.G.over);
+  $('btnPause').textContent = state.running ? '暂停' : '继续';
+  $('btnPause').disabled = !state.started || over;
+  $('btnStep').disabled = !state.started || state.running || over || state.finalizing;
+  $('btnStart').disabled = state.started && (!over || state.finalizing);
+}
+
+/* ---------------- 开战 / 重新布阵 ---------------- */
+async function startMatch(){
+  const A = presetById(state.seat.A), B = presetById(state.seat.B);
+  if (!A || !B || !A.base || !A.model || !B.base || !B.model) {
+    flash('请先配置并选择双方模型');
+    $('saveHint').textContent = '左右双方都要有完整的 Base URL 与模型 ID';
+    openDrawer(); return;
+  }
+  state.players = { A, B };
+  state.settings.target = +$('qTarget').value;
+  state.settings.speed = +$('qSpeed').value;
+  state.settings.variant = $('qVariant').value;
+  if ($('qRules')) state.settings.rules = $('qRules').value;
+  state.god = !!state.settings.god;
+  // 开战时把规则集锁进局面：之后在设置里换套，本局的合法性 / 提示词 / 结算口径都不变。
+  state.G = E.newMatch({ roundTarget:state.settings.target,
+    firstBidder:Math.random() < .5 ? 'A' : 'B', rules:selectedRules() });
+  state.runId = 'arena-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,6);
+  // 生命周期第 3 段：上一局的逐手分析 / 逐轮复盘在此丢弃，只继承整局复盘摘要。
+  // 刷新页面后 state.gameNo 会归零，用已存摘要的局号续上，标签不至于跳回「第 1 局」。
+  const prevNo = Math.max(0, ...Object.keys(state.memory).map(k => +(state.memory[k] && state.memory[k].gameNo) || 0));
+  state.gameNo = Math.max(state.gameNo, prevNo) + 1;
+  state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] };
+  loadCarry();
+  state.lastAct = { A:'—', B:'—' }; state.stats = newStats();
+  state.started = true; state.running = false; state.busy = false; state.finalizing = false;
+  clearConsole();
+  addLog('rd', '开桌 · 第 ' + state.gameNo + ' 局：' + esc(A.alias) + '（甲方） vs ' + esc(B.alias) + '（乙方）');
+  const inherited = ['A','B'].filter(w => state.carry[w].length).map(w => seatLabel(w));
+  addLog('muted', state.settings.carry
+    ? (inherited.length ? '已继承上一局整局复盘摘要：' + inherited.join(' / ') + '；上一局逐手分析已丢弃' : '跨局继承已开启，但暂无可继承的整局复盘摘要')
+    : '跨局继承已关闭，本局从空白上下文开始');
+  addLog('muted', '局内上下文：本局所有轮末复盘 + 所有逐手判断 + 所有亮牌事实全量可见（预算 ' + (state.settings.ctxBudget || 24000) + ' 字）');
+  const RR = state.G.rules;
+  addLog('muted', '规则套：' + esc(RR.name) + '（#' + RS.hash(RR) + '）· ' + esc(RS.describe(RR)));
+  addLog('muted', '先到 +' + state.settings.target + ' 分者胜 · 提示词臂 ' + state.settings.variant
+    + ' · 预算 ' + A.maxTokens + ' / ' + B.maxTokens + ' tok'
+    + ' · 思考强度 ' + effortLabel(A.effort) + ' / ' + effortLabel(B.effort)
+    + (state.settings.summary ? ' · 双方复盘并行' : '') + ' · 最多 ' + (state.settings.maxRounds || 60) + ' 轮');
+  $('setupBar').classList.add('locked');
+  $('btnGod').classList.toggle('on', state.god);
+  $('reveal').hidden = true;
+  syncQuick(); syncButtons(); render(); renderStats();
+  await loop();
+}
+function resetTable(){
+  if (state.busy) {
+    state.pendingReset = true; state.running = false;
+    flash('当前一手结束后自动重新布阵…'); syncButtons(); return;
+  }
+  doReset();
+}
+function doReset(){
+  state.pendingReset = false;
+  state.running = false; state.started = false; state.G = null; state.players = null; state.busy = false; state.finalizing = false;
+  // 逐手 / 逐轮的局内上下文随牌桌一起清掉；跨局摘要留在 state.memory，下一局由 loadCarry 取回。
+  state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] }; state.carry = { A:[], B:[] };
+  state.lastAct = { A:'—', B:'—' }; state.stats = newStats();
+  clearConsole();
+  $('setupBar').classList.remove('locked');
+  setState('待布阵', '选择双方模型后开战', '');
+  for (const w of ['A','B']) {
+    $('think' + w).innerHTML = '<span class="hint">开战后，模型的思考会在这里逐字流出</span>';
+    $('think' + w).classList.remove('typing');
+    $('thinkMeta' + w).textContent = '';
+  }
+  $('reveal').hidden = true;
+  $('btnGod').classList.toggle('on', !!state.god);
+  flash('准备就绪'); syncButtons(); render();
+}
+
+/* ---------------- 事件绑定 ---------------- */
+function bindAll(){
+  $('btnSettings').onclick = openDrawer;
+  $('btnCloseDrawer').onclick = closeDrawer;
+  $('btnCloseBottom').onclick = closeDrawer;
+  $('mask').onclick = closeDrawer;
+  $('btnNew').onclick = () => openEditor(null);
+  $('btnCancelEdit').onclick = closeEditor;
+  $('btnSavePreset').onclick = savePreset;
+  $('btnPull').onclick = () => pullModels(true);
+  $('btnTest').onclick = testConn;
+  $('btnExport').onclick = exportPresets;
+  $('btnImport').onclick = () => $('importFile').click();
+  $('importFile').onchange = e => { const f = e.target.files && e.target.files[0]; if (f) importPresets(f); e.target.value = ''; };
+  $('btnRestore').onclick = restoreBuiltin;
+  $('btnSync').onclick = resyncServer;
+  $('btnTheme').onclick = toggleTheme;
+  if ($('btnNewRule')) $('btnNewRule').onclick = () => openRuleEditor(null, selectedRules());
+  if ($('btnCancelRule')) $('btnCancelRule').onclick = closeRuleEditor;
+  if ($('btnSaveRule')) $('btnSaveRule').onclick = saveRule;
+  // 规则编辑表单任一参数变化，实时刷新「模型将看到的规则文本」预览。
+  if ($('ruleEditorSec')) $('ruleEditorSec').onchange = () => {
+    if ($('rulePreview')) $('rulePreview').textContent = C.rulesTextFor(readRuleForm());
+  };
+  $('sTheme').onchange = e => {
+    state.settings.theme = e.target.value === 'light' ? 'light' : 'dark';
+    applyTheme(); saveStore();
+  };
+  $('sDefaultMaxTokens').onchange = e => {
+    const v = Math.min(32768, Math.max(256, +e.target.value || DEFAULT_MAX_TOKENS));
+    state.settings.defaultMaxTokens = v; e.target.value = String(v); saveStore();
+    $('saveHint').textContent = '新建模型默认预算已设为 ' + v + ' tok（已有模型不受影响）';
+  };
+
+  for (const [id, key] of [['sCoach','coach'],['sSummary','summary'],['sCarry','carry'],['sGod','god'],['sStrict','strict']]) {
+    $(id).onchange = e => {
+      state.settings[key] = e.target.checked;
+      if (key === 'god') { state.god = e.target.checked; render(); }
+      if (key === 'carry' && !e.target.checked) { state.carry = { A:[], B:[] }; loadCarry(); }
+      saveStore();
+    };
+  }
+  $('btnClearMemory').onclick = clearMemory;
+  $('sMaxRounds').onchange = e => {
+    state.settings.maxRounds = Math.min(500, Math.max(3, +e.target.value || 60));
+    e.target.value = String(state.settings.maxRounds); saveStore();
+  };
+  $('sCtxBudget').onchange = e => {
+    state.settings.ctxBudget = Math.min(200000, Math.max(2000, +e.target.value || DEFAULT_SETTINGS.ctxBudget));
+    e.target.value = String(state.settings.ctxBudget); saveStore();
+  };
+  for (const [id, key] of [['qTarget','target'],['qSpeed','speed'],['qVariant','variant']]) {
+    $(id).onchange = e => {
+      state.settings[key] = (key === 'variant') ? e.target.value : +e.target.value;
+      syncQuick(); saveStore();
+    };
+  }
+  for (const id of ['qRules','sRules']) {
+    if ($(id)) $(id).onchange = e => setActiveRules(e.target.value);
+  }
+  for (const w of ['A','B']) {
+    $('pick' + w).onchange = e => { state.seat[w] = e.target.value; renderPicks(); saveStore(); };
+  }
+  $('btnStart').onclick = startMatch;
+  $('btnReset').onclick = resetTable;
+  $('btnStep').onclick = async () => { if (state.started && !state.running && !state.busy) { await runStep(); syncButtons(); } };
+  $('btnPause').onclick = () => {
+    if (!state.started || (state.G && state.G.over)) return;
+    if (state.running) { state.running = false; flash('已暂停'); syncButtons(); }
+    else loop();
+  };
+  $('btnGod').onclick = () => {
+    state.god = !state.god; state.settings.god = state.god;
+    $('btnGod').classList.toggle('on', state.god);
+    $('sGod').checked = state.god; render(); saveStore();
+  };
+  for (const k of ['flow','dec','memo','stats']) {
+    $('tab' + k[0].toUpperCase() + k.slice(1)).onclick = () => switchTab(k);
+  }
+}
+
+async function init(){
+  if (!E || !R || !C || !RS) {
+    flash('共享模块加载失败：请通过 serve-dice.py 打开本页');
+    return;
+  }
+  await loadStore();
+  state.memory = readMemory();
+  syncQuick(); bindSettingsValues(); bindAll();
+  renderPresets(); renderPicks(); renderStorage();
+  state.god = !!state.settings.god;
+  resetTable();
+}
+
+// 纯逻辑导出，便于 Node 侧离线验证；浏览器里由 init 启动。
+const ArenaCore = { normalizePreset, normalizeSettings, normalizeEffort, actText, actionHint,
+  hostOf, seatLabel, newStats, selectedRules, activeRules, allRules, renderRules, readRuleForm,
+  gameContextText, recallText, summaryMessages, matchSummaryMessages, factLine,
+  BUILTIN, DEFAULT_SETTINGS, EFFORTS };
+if (typeof module !== 'undefined' && module.exports) module.exports = ArenaCore;
+else root.ArenaCore = ArenaCore;
+
+if (doc) init();
+})(typeof self !== 'undefined' ? self : globalThis);

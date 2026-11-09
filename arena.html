@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>鬼骰 · 模型对弈台</title>
+<link rel="stylesheet" href="arena.css">
+<script>
+  /* 首屏预应用主题，避免本地已选亮色时先闪一下暗色 */
+  try {
+    var _s = JSON.parse(localStorage.getItem('d1-arena-store-v1') || '{}');
+    if (_s && _s.settings && _s.settings.theme === 'light')
+      document.documentElement.setAttribute('data-theme', 'light');
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark"><span>骰</span></div>
+    <div class="brand-txt">
+      <h1>鬼骰 <em>ARENA</em></h1>
+      <p>大话骰 · 模型对弈台</p>
+    </div>
+  </div>
+
+  <div class="match-state" id="matchState">
+    <span class="state-dot"></span>
+    <span id="stateText">待布阵</span>
+    <span class="state-sep"></span>
+    <span id="stateSub">选择双方模型后开战</span>
+  </div>
+
+  <div class="top-actions">
+    <button class="tbtn" id="btnGod" title="显示双方暗骰">上帝视角</button>
+    <button class="tbtn" id="btnStep" title="只走一步">单步</button>
+    <button class="tbtn" id="btnPause" title="暂停 / 继续连播">暂停</button>
+    <button class="tbtn" id="btnReset" title="清空牌桌，重新布阵">重新布阵</button>
+    <button class="tbtn" id="btnTheme" title="切换暗色 / 亮色">切换亮色</button>
+    <button class="tbtn accent" id="btnSettings">模型设置</button>
+  </div>
+</header>
+
+<main class="stage">
+
+  <!-- ============ 布阵 ============ -->
+  <section class="setup" id="setupBar">
+    <div class="seat-pick side-a">
+      <div class="pick-cap"><span class="cap-dot"></span> 甲方 <small>LEFT</small></div>
+      <div class="pick-row">
+        <div class="pick-avatar" id="pickAvatarA">甲</div>
+        <div class="pick-select">
+          <select id="pickA" aria-label="选择甲方模型"></select>
+          <div class="pick-meta" id="pickMetaA">尚未选择</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="setup-mid">
+      <div class="vs-badge"><span>VS</span></div>
+      <button class="start-btn" id="btnStart"><b>开 战</b><small>启动对局</small></button>
+      <div class="quick-params">
+        <label>目标分 <select id="qTarget"><option value="3">+3</option><option value="5">+5</option><option value="10" selected>+10</option><option value="15">+15</option></select></label>
+        <label>节奏 <select id="qSpeed"><option value="0">极速</option><option value="400" selected>正常</option><option value="1500">慢放</option></select></label>
+        <label>提示词 <select id="qVariant"><option value="classic">经典兵书</option><option value="probe" selected>自主博弈</option></select></label>
+        <label>规则 <select id="qRules" aria-label="选择规则套"></select></label>
+      </div>
+    </div>
+
+    <div class="seat-pick side-b">
+      <div class="pick-cap"><small>RIGHT</small> 乙方 <span class="cap-dot"></span></div>
+      <div class="pick-row">
+        <div class="pick-select align-right">
+          <select id="pickB" aria-label="选择乙方模型"></select>
+          <div class="pick-meta" id="pickMetaB">尚未选择</div>
+        </div>
+        <div class="pick-avatar" id="pickAvatarB">乙</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 主舞台：左右对战 ============ -->
+  <section class="arena" id="arena">
+    <article class="fighter seat-a" id="fighterA">
+      <div class="fighter-glow"></div>
+      <div class="fighter-head">
+        <div class="avatar" id="avatarA">甲</div>
+        <div class="ident">
+          <h2 id="nameA">—</h2>
+          <p id="subA">等待布阵</p>
+        </div>
+        <div class="status-pill" id="statusA">待机</div>
+      </div>
+
+      <div class="cup-block">
+        <div class="cup-cap"><span>自己的骰盅</span><em id="cupNoteA">未摇骰</em></div>
+        <div class="dice" id="diceA"></div>
+      </div>
+
+      <div class="score-block">
+        <div class="score-num" id="scoreA">0</div>
+        <div class="score-side"><span>积分</span><div class="rail"><i id="railA"></i></div></div>
+      </div>
+
+      <div class="last-act" id="lastActA"><span class="last-cap">最近一手</span><b id="lastTextA">—</b></div>
+
+      <div class="think-box">
+        <div class="think-cap"><span class="pulse"></span> 实时推演 <em id="thinkMetaA"></em></div>
+        <div class="think-body" id="thinkA"><span class="hint">开战后，模型的思考会在这里逐字流出</span></div>
+      </div>
+    </article>
+
+    <div class="table-center">
+      <div class="table-halo"></div>
+      <div class="round-chip" id="roundChip">尚未开桌</div>
+      <div class="bid-card">
+        <div class="bid-cap">当前最高喊价</div>
+        <div class="bid-value" id="bidValue">—</div>
+        <div class="bid-sub" id="bidSub">每人 5 颗 · 1 为万能 · 2&lt;3&lt;4&lt;5&lt;6&lt;1</div>
+      </div>
+      <div class="turn-line" id="turnLine"><span class="turn-arrow left">‹</span><b id="turnText">等待开战</b><span class="turn-arrow right">›</span></div>
+      <div class="seq-block">
+        <div class="seq-cap">本轮喊价序列</div>
+        <div class="seq" id="seq"><span class="seq-empty">暂无喊价</span></div>
+      </div>
+      <div class="reveal" id="reveal" hidden></div>
+    </div>
+
+    <article class="fighter seat-b" id="fighterB">
+      <div class="fighter-glow"></div>
+      <div class="fighter-head">
+        <div class="status-pill" id="statusB">待机</div>
+        <div class="ident align-right">
+          <h2 id="nameB">—</h2>
+          <p id="subB">等待布阵</p>
+        </div>
+        <div class="avatar" id="avatarB">乙</div>
+      </div>
+
+      <div class="cup-block">
+        <div class="cup-cap"><span>自己的骰盅</span><em id="cupNoteB">未摇骰</em></div>
+        <div class="dice" id="diceB"></div>
+      </div>
+
+      <div class="score-block">
+        <div class="score-num" id="scoreB">0</div>
+        <div class="score-side"><span>积分</span><div class="rail"><i id="railB"></i></div></div>
+      </div>
+
+      <div class="last-act" id="lastActB"><span class="last-cap">最近一手</span><b id="lastTextB">—</b></div>
+
+      <div class="think-box">
+        <div class="think-cap"><span class="pulse"></span> 实时推演 <em id="thinkMetaB"></em></div>
+        <div class="think-body" id="thinkB"><span class="hint">开战后，模型的思考会在这里逐字流出</span></div>
+      </div>
+    </article>
+  </section>
+
+  <!-- ============ 底部控制台 ============ -->
+  <section class="console">
+    <div class="tabs">
+      <button class="tab active" id="tabFlow" data-tab="flow">牌桌流水</button>
+      <button class="tab" id="tabDec" data-tab="dec">决策明细 <i id="decCount">0</i></button>
+      <button class="tab" id="tabMemo" data-tab="memo">轮末复盘 <i id="memoCount">0</i></button>
+      <button class="tab" id="tabStats" data-tab="stats">对局统计</button>
+      <div class="tabs-right"><span id="consoleMeta">准备就绪</span></div>
+    </div>
+    <div class="panels">
+      <div class="panel active" id="panelFlow"></div>
+      <div class="panel" id="panelDec"></div>
+      <div class="panel" id="panelMemo"></div>
+      <div class="panel" id="panelStats"></div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>鬼骰 ARENA · 规则引擎 / 解析 / 提示词与无头评测共用同一份实现</span>
+    <span id="footHash"></span>
+  </footer>
+</main>
+
+<!-- ============ 设置抽屉 ============ -->
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer" aria-label="模型设置">
+  <div class="drawer-head">
+    <div>
+      <h2>模型设置</h2>
+      <p>把模型配置好，回到牌桌选左右双方即可开战</p>
+    </div>
+    <button class="close" id="btnCloseDrawer" aria-label="关闭">×</button>
+  </div>
+
+  <div class="drawer-body">
+
+    <div class="sec">
+      <div class="sec-head">
+        <h3>模型库 <span class="count" id="presetCount">0</span></h3>
+        <div class="sec-btns">
+          <button class="mini" id="btnExport">导出</button>
+          <button class="mini" id="btnImport">导入</button>
+          <button class="mini primary" id="btnNew">＋ 新建模型</button>
+        </div>
+      </div>
+      <div class="preset-list" id="presetList"></div>
+    </div>
+
+    <div class="sec" id="editorSec" hidden>
+      <div class="sec-head"><h3 id="editorTitle">新建模型</h3><button class="mini" id="btnCancelEdit">收起</button></div>
+      <div class="form">
+        <label class="field"><span>显示名称 <i>牌桌上展示的别名</i></span><input id="fAlias" placeholder="例如：Avalon 256K"></label>
+        <label class="field"><span>Base URL</span><input id="fBase" placeholder="http://127.0.0.1:8791/v1"></label>
+        <div class="field-row">
+          <label class="field grow"><span>模型 ID</span><input id="fModel" list="modelList" placeholder="点击右侧拉取候选"><datalist id="modelList"></datalist></label>
+          <button class="mini pull" id="btnPull">拉取列表</button>
+        </div>
+        <label class="field"><span>API Key <i>可选；留空时由服务端为网关注入</i></span><input id="fKey" type="password" placeholder="不填则留空"></label>
+        <div class="field-row">
+          <label class="field"><span>输出预算 (tokens)</span><input id="fMaxTokens" type="number" min="256" max="32768" step="256" value="8192"></label>
+          <label class="field"><span>温度</span><input id="fTemp" type="number" min="0" max="2" step="0.1" value="0.8"></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>思考强度 <i>每个模型独立设置</i></span>
+            <select id="fEffort">
+              <option value="off">关闭 · 直接出招</option>
+              <option value="low">轻度 · 1024 tok 思考预算</option>
+              <option value="medium">中度 · 4096 tok</option>
+              <option value="high">深度 · 12288 tok</option>
+            </select>
+          </label>
+          <div class="colors" id="fColors"></div>
+        </div>
+        <label class="field"><span>备注 <i>仅自己看</i></span><input id="fNote" placeholder="例如：本地 256K 上下文，适合长局"></label>
+        <div class="form-actions">
+          <button class="mini" id="btnTest">测试连接</button>
+          <span class="test-result" id="testResult"></span>
+          <button class="mini primary" id="btnSavePreset">保存模型</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-head">
+        <h3>规则集 <span class="count" id="ruleCount">2</span></h3>
+        <div class="sec-btns"><button class="mini primary" id="btnNewRule">＋ 另存一套规则</button></div>
+      </div>
+      <label class="field"><span>当前使用 <i>内置两套只读；开战后本局锁定，中途切换下一局生效</i></span>
+        <select id="sRules" aria-label="选择当前规则套"></select></label>
+      <div class="rule-brief" id="ruleBrief">正在读取…</div>
+      <div class="rule-list" id="ruleList"></div>
+
+      <div class="rule-editor" id="ruleEditorSec" hidden>
+        <div class="sec-head"><h3 id="ruleEditorTitle">自定义规则套</h3><button class="mini" id="btnCancelRule">收起</button></div>
+        <div class="form compact">
+          <div class="field-row">
+            <label class="field grow"><span>规则套名称</span><input id="rName" placeholder="例如：绝境搏命流"></label>
+            <label class="field"><span>ID <i>保存后不可改</i></span><input id="rId" placeholder="留空自动生成" readonly></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>斋的触发方式</span>
+              <select id="rZhaiMode">
+                <option value="face1">经典 · 喊点数 1 即斋（锁点数）</option>
+                <option value="half">新规 · 取半向上取整转斋</option>
+              </select></label>
+            <label class="field"><span>取半除数 <i>仅新规</i></span><input id="rHalfDivisor" type="number" min="2" max="4" step="1" value="2"></label>
+            <label class="field"><span>破斋倍数 <i>0 = 不可破斋</i></span><input id="rBreakMultiplier" type="number" min="0" max="4" step="1" value="2"></label>
+          </div>
+          <div class="rule-checks">
+            <label class="check"><input id="rFaceFree" type="checkbox"><span>转斋点数全自由 <i>不限制必须喊 1</i></span></label>
+            <label class="check"><input id="rLockFace" type="checkbox"><span>斋内锁死点数 <i>只能继续加个数</i></span></label>
+            <label class="check"><input id="rFirstZhai" type="checkbox"><span>首喊可直接喊斋</span></label>
+            <label class="check"><input id="rFirstFace1" type="checkbox"><span>首喊允许点数 1</span></label>
+            <label class="check"><input id="rBreakRestoresWild" type="checkbox"><span>破斋后 1 恢复万能</span></label>
+            <label class="check"><input id="rAutoInfer" type="checkbox"><span>漏写标记按个数自动推断</span></label>
+            <label class="check"><input id="rSlash" type="checkbox"><span>启用「劈」 <i>与开盅同结算、积分翻倍</i></span></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>普通开盅积分 ±</span><input id="rStake" type="number" min="1" max="5" step="1" value="1"></label>
+            <label class="field"><span>劈的积分 ±</span><input id="rSlashStake" type="number" min="1" max="5" step="1" value="2"></label>
+            <label class="field"><span>首喊个数下限</span><input id="rFirstMin" type="number" min="2" max="6" step="1" value="2"></label>
+            <label class="field"><span>首喊个数上限</span><input id="rFirstMax" type="number" min="2" max="10" step="1" value="6"></label>
+          </div>
+          <div class="form-actions">
+            <span class="test-result" id="ruleSaveHint"></span>
+            <button class="mini primary" id="btnSaveRule">保存规则套</button>
+          </div>
+        </div>
+      </div>
+
+      <details class="rule-preview-wrap">
+        <summary>模型将看到的规则文本（按当前参数实时生成）</summary>
+        <pre class="rule-preview" id="rulePreview"></pre>
+      </details>
+    </div>
+
+    <div class="sec">
+      <div class="sec-head"><h3>对局高级</h3></div>
+      <div class="form compact">
+        <label class="check"><input id="sCoach" type="checkbox"><span>附加「桌上经验」教练文本 <i>仅经典兵书臂生效 · 会喂策略结论，自主博弈臂已忽略</i></span></label>
+        <label class="check"><input id="sSummary" type="checkbox" checked><span>每轮结束让双方各写一段复盘 <i>局内全量保留；整局结束再写一段整局复盘</i></span></label>
+        <label class="check"><input id="sCarry" type="checkbox" checked><span>下一局继承上一局的整局复盘摘要 <i>按模型+提示臂隔离；上一局逐手分析会丢弃</i></span></label>
+        <label class="check"><input id="sGod" type="checkbox"><span>默认开启上帝视角 <i>观战者可见暗骰</i></span></label>
+        <label class="check"><input id="sStrict" type="checkbox" checked><span>三次无合法动作判负 <i>关闭则按最小合法加价接手</i></span></label>
+        <div class="field-row">
+          <label class="field"><span>最多轮数 <i>防止长局震荡</i></span><input id="sMaxRounds" type="number" min="3" max="500" step="1" value="60"></label>
+          <label class="field"><span>局内全量上下文预算 <i>字符；超出只折叠最早逐手判断，复盘与亮牌事实不丢</i></span><input id="sCtxBudget" type="number" min="2000" max="200000" step="1000" value="24000"></label>
+          <label class="field"><span>新建模型默认预算 <i>tokens，各模型可单独改</i></span><input id="sDefaultMaxTokens" type="number" min="256" max="32768" step="256" value="8192"></label>
+        </div>
+        <label class="field" style="max-width:190px"><span>外观 <i>暗色 / 亮色</i></span>
+          <select id="sTheme"><option value="dark">暗色 · 午夜牌桌</option><option value="light">亮色 · 白纸牌桌</option></select>
+        </label>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-head"><h3>存储与服务</h3></div>
+      <div class="storage" id="storageInfo">正在读取…</div>
+      <div class="sec-btns"><button class="mini" id="btnRestore">恢复内置预设</button><button class="mini" id="btnSync">重新读取服务端</button><button class="mini" id="btnClearMemory">清空跨局复盘摘要</button></div>
+    </div>
+
+  </div>
+
+  <div class="drawer-foot">
+    <span id="saveHint">修改即时保存在本机</span>
+    <button class="mini primary" id="btnCloseBottom">完成</button>
+  </div>
+</aside>
+
+<input type="file" id="importFile" accept=".json,application/json" hidden>
+
+<script src="dice-rulesets.js"></script>
+<script src="dice-engine.js"></script>
+<script src="dice-rules.js"></script>
+<script src="context.js"></script>
+<script src="arena.js"></script>
+</body>
+</html>

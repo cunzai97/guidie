@@ -1,0 +1,42 @@
+# ---- 实验产物：不进版本库 ----
+# 每次对局/评测的原始记录，体积大且可由 run 命令重新生成
+*.jsonl
+!examples/*.jsonl
+
+# 页面侧代理落盘的调用流水
+calls.jsonl
+
+# 本机运行日志
+*.log
+
+# ---- 本地配置：含内网端口与个人模型清单 ----
+# presets.json 由页面「模型设置」自动写出，含 Base URL / API Key 等本机信息。
+# 需要迁移配置时，用页面里的「导出 / 导入」，或复制 presets.json.example。
+presets.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- 其它 ----
+*.gguf
+*.bin
+.tmp/
+tmp/

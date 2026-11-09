@@ -1,0 +1,115 @@
+{
+  "presets": [
+    {
+      "id": "bl-minimax",
+      "alias": "MiniMax M3.1",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "minimax-m3.1-flash",
+      "apiKey": "",
+      "thinking": false,
+      "effort": "off",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#64b9ff",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-glm",
+      "alias": "GLM 5.3 Flash",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "glm-5.3-flash",
+      "apiKey": "",
+      "thinking": false,
+      "effort": "off",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#ff9068",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-avalon",
+      "alias": "Avalon 256K",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "avalon-iq3ks-256k",
+      "apiKey": "",
+      "thinking": true,
+      "effort": "medium",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#e3bd73",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-hy",
+      "alias": "HY4 Preview",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "hy4-preview-f",
+      "apiKey": "",
+      "thinking": false,
+      "effort": "off",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#b78bff",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-hy3",
+      "alias": "HY3 · 免费",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "hy3",
+      "apiKey": "",
+      "thinking": false,
+      "effort": "off",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#5fd0d8",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-ds",
+      "alias": "DeepSeek V4.1",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "deepseek-v4.1-flash",
+      "apiKey": "",
+      "thinking": true,
+      "effort": "medium",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#6bd8a8",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    },
+    {
+      "id": "bl-kimi",
+      "alias": "Kimi K3.1 Pro",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "kimi-k3.1-pro",
+      "apiKey": "",
+      "thinking": false,
+      "effort": "off",
+      "maxTokens": 8192,
+      "temperature": 0.8,
+      "color": "#ff7fa8",
+      "note": "示例 · 把 Base URL 与模型 ID 改成你自己的端点"
+    }
+  ],
+  "settings": {
+    "target": 5,
+    "speed": 400,
+    "variant": "probe",
+    "coach": false,
+    "summary": true,
+    "god": false,
+    "strict": true,
+    "maxRounds": 60,
+    "defaultMaxTokens": 8192,
+    "theme": "light",
+    "carry": true,
+    "ctxBudget": 24000,
+    "rules": "classic",
+    "ruleSets": []
+  },
+  "seat": {
+    "A": "bl-minimax",
+    "B": "bl-minimax"
+  }
+}

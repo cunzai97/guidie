@@ -42,6 +42,7 @@ const BUILTIN = [
 const DEFAULT_SETTINGS = {
   target:10, speed:400, variant:'probe', coach:false, summary:true, god:false, strict:true, maxRounds:60,
   defaultMaxTokens:8192,   // 只是「新建模型 / 配置缺项」时的缺省；每个模型自己的预算始终独立可改
+  defaultEffort:'medium',  // 同上：新建模型 / 配置缺项时的缺省思考强度（off/low/medium/high）
   theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
   carry:true,              // 下一局继承上一局的整局复盘摘要（丢弃上一局逐手分析）
   ctxBudget:24000,         // 局内全量上下文的字符软预算，超出时折叠最早的逐手判断
@@ -61,14 +62,20 @@ const state = {
   memory:{},                // { [模型ID|提示臂]: {text, at, gameNo} }，按模型与臂隔离
   lastAct:{A:'—',B:'—'}, thinkMode:{A:'',B:''}, pendingReset:false,
   flowEl:null, decCols:null, memoCols:null,
-  stats:newStats(), editingId:null, editColor:PALETTE[0], ruleEditingId:null,
+  stats:{ A:newStats(), B:newStats() }, editingId:null, editColor:PALETTE[0], ruleEditingId:null,
 };
 
 function newStats(){
   return { steps:0, calls:0, truncated:0, ambiguous:0, invalid:0, opens:0,
            opensCorrect:0, ms:0, tokens:0, netRetries:0, forfeits:0, decs:0, memos:0,
-           slashes:0, toZhai:0, breakZhai:0 };
+           slashes:0, toZhai:0, breakZhai:0, rewrites:0 };
 }
+// 统计按模型（座位）分列：每个指标都归属于「做这个动作的那一方」，
+// 不再把两个模型的数据混在一个对象里——混在一起没法对比模型能力。
+// 归属规则：决策手数/调用/token/耗时/截断/歧义/无动作 → 行动方；
+// 开盅次数/开盅正确/劈 → 开盅方；转斋/破斋 → 喊价方；判负 → 判负方。
+function statOf(w){ return state.stats[w]; }
+function statTotal(){ return state.stats.A.steps + state.stats.B.steps; }
 function uid(){ return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 function clamp(v, lo, hi, dflt){ const n = +v; return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt; }
 const EFFORTS = ['off','low','medium','high'];
@@ -87,11 +94,12 @@ function normalizeSettings(s){
   o.carry = !!o.carry;
   o.ruleSets = normalizeRuleSets(o.ruleSets);
   o.rules = String(o.rules || 'classic');
+  o.defaultEffort = normalizeEffort(o.defaultEffort || DEFAULT_SETTINGS.defaultEffort);
   return o;
 }
-function normalizePreset(p, dfltMaxTokens){
+function normalizePreset(p, dfltMaxTokens, dfltEffort){
   p = p || {};
-  const eff = normalizeEffort(p.effort || (p.thinking ? 'high' : 'off'));
+  const eff = normalizeEffort(p.effort || (p.thinking ? 'high' : (dfltEffort || 'medium')));
   return {
     id: String(p.id || uid()), alias: String(p.alias || p.model || '未命名模型').slice(0,40),
     base: String(p.base || '').trim(), model: String(p.model || '').trim(),
@@ -196,12 +204,12 @@ async function loadStore(){
   const hasP = x => x && Array.isArray(x.presets) && x.presets.length;
   const src = hasP(server) ? server : (hasP(local) ? local : null);
   if (src) {
-    state.presets = src.presets.map(p => normalizePreset(p, (src.settings || {}).defaultMaxTokens));
+    state.presets = src.presets.map(p => normalizePreset(p, (src.settings || {}).defaultMaxTokens, (src.settings || {}).defaultEffort));
     state.settings = normalizeSettings(src.settings);
     state.seat = Object.assign({A:'',B:''}, src.seat || {});
     state.storage = (src === server) ? 'server' : 'local';
   } else {
-    state.presets = BUILTIN.map(p => normalizePreset(p, state.settings.defaultMaxTokens));
+    state.presets = BUILTIN.map(p => normalizePreset(p, state.settings.defaultMaxTokens, state.settings.defaultEffort));
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
     state.seat = { A:'bl-minimax', B:'bl-glm' };
     state.storage = 'builtin';
@@ -261,7 +269,7 @@ function openEditor(id){
   $('fKey').value   = p ? p.apiKey : '';
   $('fMaxTokens').value = String(p ? p.maxTokens : (state.settings.defaultMaxTokens || DEFAULT_MAX_TOKENS));
   $('fTemp').value = p ? p.temperature : 0.8;
-  if ($('fEffort')) $('fEffort').value = p ? normalizeEffort(p.effort) : 'off';
+  if ($('fEffort')) $('fEffort').value = p ? normalizeEffort(p.effort) : normalizeEffort(state.settings.defaultEffort);
   $('fNote').value = p ? p.note : '';
   state.editColor = p ? p.color : PALETTE[state.presets.length % PALETTE.length];
   renderColors();
@@ -275,9 +283,9 @@ function readForm(){
     id: state.editingId || uid(), alias: $('fAlias').value, base: $('fBase').value,
     model: $('fModel').value, apiKey: $('fKey').value,
     maxTokens: $('fMaxTokens').value, temperature: $('fTemp').value,
-    effort: $('fEffort') ? $('fEffort').value : 'off',
+    effort: $('fEffort') ? $('fEffort').value : state.settings.defaultEffort,
     note: $('fNote').value, color: state.editColor,
-  }, state.settings.defaultMaxTokens);
+  }, state.settings.defaultMaxTokens, state.settings.defaultEffort);
 }
 function savePreset(){
   const p = readForm();
@@ -345,7 +353,7 @@ function importPresets(file){
     try {
       const j = JSON.parse(String(rd.result));
       if (!Array.isArray(j.presets)) throw new Error('缺少 presets 列表');
-      state.presets = j.presets.map(p => normalizePreset(p, (j.settings || {}).defaultMaxTokens));
+      state.presets = j.presets.map(p => normalizePreset(p, (j.settings || {}).defaultMaxTokens, (j.settings || {}).defaultEffort));
       state.settings = normalizeSettings(j.settings);
       state.seat = Object.assign({A:'',B:''}, j.seat || {});
       for (const w of ['A','B']) if (!presetById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
@@ -357,7 +365,7 @@ function importPresets(file){
 }
 function restoreBuiltin(){
   for (const b of BUILTIN) if (!state.presets.some(p => p.id === b.id))
-    state.presets.push(normalizePreset(b, state.settings.defaultMaxTokens));
+    state.presets.push(normalizePreset(b, state.settings.defaultMaxTokens, state.settings.defaultEffort));
   renderPicks(); renderPresets(); saveStore();
   $('saveHint').textContent = '已补回内置预设';
 }
@@ -533,6 +541,7 @@ function bindSettingsValues(){
   $('sMaxRounds').value = String(state.settings.maxRounds || 60);
   $('sCtxBudget').value = String(state.settings.ctxBudget || DEFAULT_SETTINGS.ctxBudget);
   $('sDefaultMaxTokens').value = String(state.settings.defaultMaxTokens || DEFAULT_MAX_TOKENS);
+  if ($('sDefaultEffort')) $('sDefaultEffort').value = normalizeEffort(state.settings.defaultEffort);
   renderRules();
   applyTheme();
 }
@@ -724,7 +733,7 @@ function addDec(w, res, label){
   raw.appendChild(rs); raw.appendChild(rp); d.appendChild(raw);
   list.appendChild(d); list.scrollTop = list.scrollHeight;
   cnt.textContent = String(list.children.length);
-  state.stats.decs++; $('decCount').textContent = String(state.stats.decs);
+  state.stats[w].decs++; $('decCount').textContent = String(state.stats.A.decs + state.stats.B.decs);
 }
 function addMemo(w, roundNo, text){
   const cols = colsFor('panelMemo', 'memo', 'memoCols');
@@ -736,25 +745,58 @@ function addMemo(w, roundNo, text){
   d.appendChild(rd); d.appendChild(document.createTextNode(text));
   list.appendChild(d); list.scrollTop = list.scrollHeight;
   cnt.textContent = String(list.children.length);
-  state.stats.memos++; $('memoCount').textContent = String(state.stats.memos);
+  state.stats[w].memos++; $('memoCount').textContent = String(state.stats.A.memos + state.stats.B.memos);
+}
+/* 统计面板：按模型（座位）左右对照。
+ * 每个指标归到「做这个动作的那一方」：决策/调用/token/耗时/截断 → 行动方；
+ * 开盅次数/开盅正确/劈 → 开盅方；转斋/破斋 → 喊价方；判负 → 判负方。
+ * 对照比合并更有用——合并看不出"谁更快、谁更准"。 */
+function statRow(label, a, b, sub, better){
+  // better: 'high' 越大越好 / 'low' 越小越好 / '' 不比较
+  let win = '';
+  if (better && a !== b && a !== '—' && b !== '—') {
+    const na = parseFloat(String(a).replace(/[^\d.-]/g,'')), nb = parseFloat(String(b).replace(/[^\d.-]/g,''));
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) {
+      const aWin = better === 'high' ? na > nb : na < nb;
+      win = aWin ? ' win' : '';
+    }
+  }
+  return '<div class="stat-row">'
+    + '<div class="sr-k">' + esc(label) + (sub ? '<i>' + esc(sub) + '</i>' : '') + '</div>'
+    + '<div class="sr-v a' + (win ? ' win' : '') + '">' + esc(a) + '</div>'
+    + '<div class="sr-v b' + (win ? ' lose' : '') + '">' + esc(b) + '</div>'
+    + '</div>';
 }
 function renderStats(){
-  const s = state.stats, G = state.G;
-  const cards = [
-    ['对局轮数', G ? G.roundNo : 0, '已进行', ''],
-    ['决策手数', s.steps, '模型落子', ''],
-    ['模型调用', s.calls, '含重写与复盘', ''],
-    ['输出 token', s.tokens || '—', '累计', ''],
-    ['平均耗时', s.calls ? Math.round(s.ms / s.calls) + ' ms' : '—', '每步', ''],
-    ['截断次数', s.truncated, 'finish=length', s.truncated ? 'warn' : ''],
-    ['开盅正确', s.opensCorrect + '/' + s.opens, '开盅者赢', 'gold'],
-    ['劈（翻倍）', s.slashes, '±' + activeRules().slashStake + ' 分结算', s.slashes ? 'gold' : ''],
-    ['转斋 / 破斋', s.toZhai + ' / ' + s.breakZhai, '状态切换手数', ''],
-    ['无动作判负', s.forfeits, 'strict 模式', s.forfeits ? 'warn' : ''],
+  const A = state.stats.A, B = state.stats.B, G = state.G;
+  const pA = state.players && state.players.A, pB = state.players && state.players.B;
+  const nameA = pA ? pA.alias : '甲方', nameB = pB ? pB.alias : '乙方';
+  const av = (s, f) => f(s);
+  const rows = [
+    statRow('决策手数', av(A, s=>s.steps), av(B, s=>s.steps), '模型落子', ''),
+    statRow('模型调用', av(A, s=>s.calls), av(B, s=>s.calls), '含重写', ''),
+    statRow('重写次数', av(A, s=>s.rewrites), av(B, s=>s.rewrites), '为拿合法动作多问', 'low'),
+    statRow('输出 token', av(A, s=>s.tokens||'—'), av(B, s=>s.tokens||'—'), '累计', ''),
+    statRow('平均耗时', A.calls ? Math.round(A.ms/A.calls)+' ms' : '—', B.calls ? Math.round(B.ms/B.calls)+' ms' : '—', '每次调用', 'low'),
+    statRow('截断次数', av(A, s=>s.truncated), av(B, s=>s.truncated), 'finish=length', 'low'),
+    statRow('解析歧义', av(A, s=>s.ambiguous), av(B, s=>s.ambiguous), '多候选', 'low'),
+    statRow('开盅次数', av(A, s=>s.opens), av(B, s=>s.opens), '本方开盅', ''),
+    statRow('开盅正确', A.opens ? A.opensCorrect+'/'+A.opens : '—', B.opens ? B.opensCorrect+'/'+B.opens : '—', '开盅者赢', 'high'),
+    statRow('劈（翻倍）', av(A, s=>s.slashes), av(B, s=>s.slashes), '±'+activeRules().slashStake+' 分', ''),
+    statRow('转斋 / 破斋', A.toZhai+' / '+A.breakZhai, B.toZhai+' / '+B.breakZhai, '状态切换', ''),
+    statRow('无动作判负', av(A, s=>s.forfeits), av(B, s=>s.forfeits), 'strict 模式', 'low'),
+    statRow('复盘篇数', av(A, s=>s.memos), av(B, s=>s.memos), '轮末+整局', ''),
+    statRow('积分', G ? (G.points.A>=0?'+':'')+G.points.A : '—', G ? (G.points.B>=0?'+':'')+G.points.B : '—', '当前比分', 'high'),
   ];
-  $('panelStats').innerHTML = '<div class="stats-grid">' + cards.map(c =>
-    '<div class="stat-card"><div class="k">' + esc(c[0]) + '</div><div class="v ' + c[3] + '">' + esc(c[1]) + '</div><div class="s">' + esc(c[2]) + '</div></div>'
-  ).join('') + '</div>';
+  $('panelStats').innerHTML =
+      '<div class="stats-head">'
+    +   '<div class="sh-k">指标</div>'
+    +   '<div class="sh-v a"><b>' + esc(nameA) + '</b><i>' + esc(seatLabel('A')) + '</i></div>'
+    +   '<div class="sh-v b"><b>' + esc(nameB) + '</b><i>' + esc(seatLabel('B')) + '</i></div>'
+    + '</div>'
+    + '<div class="stats-rows">' + rows.join('') + '</div>'
+    + '<div class="stats-foot">对局轮数 ' + (G ? G.roundNo : 0)
+    + ' · 指标按动作归属方拆分，非两方合并</div>';
 }
 function clearConsole(){
   for (const id of ['panelFlow','panelDec','panelMemo','panelStats']) $(id).innerHTML = '';
@@ -913,10 +955,10 @@ async function decide(w, label){
         addLog('ow', seatLabel(w) + ' 接口重试（第 ' + i + ' 次）');
       });
     thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
-    state.stats.calls++;
+    state.stats[w].calls++;
     ms += out.ms; netSum += out.netRetries || 0;
     if (out.tokens != null) tokens += out.tokens;
-    if (out.finish === 'length') { state.stats.truncated++; truncated++; }
+    if (out.finish === 'length') { state.stats[w].truncated++; truncated++; }
     raws.push(out.raw || '(空)');
     if (out.reason) reasons.push('【第' + tries + '次 · 原生思考】\n' + out.reason);
     const judge = R.extractJudgment(out.raw);
@@ -925,7 +967,7 @@ async function decide(w, label){
     // 截断且末行不是完整行动行时，绝不把分析中的「N 个 M」误当落子
     const isCut = out.finish === 'length' && !R.ACTION_LINE_RE.test(lastActionLine(out.raw));
     const pa = isCut ? { action:null, ambiguous:false, text:'', dropped:0 } : R.parseAction(out.raw);
-    if (pa.ambiguous) { ambiguous = true; state.stats.ambiguous++; }
+    if (pa.ambiguous) { ambiguous = true; state.stats[w].ambiguous++; }
     if (pa.action) {
       const why = R.checkLegal(r, pa.action);
       if (!why) { action = pa.action; break; }
@@ -945,7 +987,9 @@ async function decide(w, label){
       if (isCut) thinkNote(w, '输出被截断 · 带着原思考续写一次');
     }
   }
-  if (!action) state.stats.invalid++;
+  if (!action) state.stats[w].invalid++;
+  // 重写次数：一次决策里为拿到合法动作而额外问了几次（calls - steps 的来源）。
+  if (tries > 1) state.stats[w].rewrites += tries - 1;
   return { action, tries, ms, tokens, netRetries:netSum, truncated, ambiguous, note,
            raw:raws.join(' | '), reason:reasons.join('\n\n'), invalid:!action };
 }
@@ -1154,9 +1198,11 @@ async function afterOpen(res, forfeit){
     addLog('rs', act + '结果：' + d + ' → ' + seatLabel(res.winner) + delta + pointStr);
   }
   if (!forfeit) {
-    state.stats.opens++;
-    if (res.winner === res.opener) state.stats.opensCorrect++;
-    if (res.slash) state.stats.slashes++;
+    // 开盅次数 / 开盅正确 / 劈 都归属「开盅的那一方」——这是该模型自己的决策质量。
+    const os = state.stats[res.opener];
+    os.opens++;
+    if (res.winner === res.opener) os.opensCorrect++;
+    if (res.slash) os.slashes++;
   }
   showReveal(res, forfeit); render(); renderStats();
   await sleep(Math.max(500, Math.min(1600, state.settings.speed || 400)));
@@ -1221,8 +1267,8 @@ async function stepOnce(){
   // 漏写「斋 / 破斋」时按当前规则集自动推断：决策明细与真实落子必须是同一个动作。
   const acted = (res.action && res.action.type === 'bid') ? E.normalizeAction(r, res.action) : res.action;
   const shown = Object.assign({}, res, { action:acted });
-  state.stats.steps++; state.stats.ms += res.ms; state.stats.tokens += res.tokens;
-  state.stats.netRetries += res.netRetries;
+  state.stats[w].steps++; state.stats[w].ms += res.ms; state.stats[w].tokens += res.tokens;
+  state.stats[w].netRetries += res.netRetries;
   addDec(w, shown, label); renderStats();
   // 当局的所有分析整局保留，不再按轮裁掉旧手；展示层由 gameContextText 的 ctxBudget 折叠，
   // 且折叠发生在最早那几轮、会明确标注，不会静默丢掉本局过程。
@@ -1233,8 +1279,8 @@ async function stepOnce(){
   if (acted) {
     E.applyBid(G.round, w, acted);          // 完整动作对象：mode / slash 不再丢失
     state.lastAct[w] = actText(acted);
-    if (acted.mode === 'toZhai') state.stats.toZhai++;
-    else if (acted.mode === 'breakZhai') state.stats.breakZhai++;
+    if (acted.mode === 'toZhai') state.stats[w].toZhai++;
+    else if (acted.mode === 'breakZhai') state.stats[w].breakZhai++;
     addLog('', seatLabel(w) + ' <b>' + esc(actText(acted)) + '</b>');
     addLog('muted', res.ms + ' ms · ' + (res.tokens || '—') + ' tok'
       + (res.tries > 1 ? ' · 重写 ' + (res.tries - 1) + ' 次' : '')
@@ -1243,7 +1289,7 @@ async function stepOnce(){
   }
   if (state.settings.strict) {
     addLog('ow', '⚠ ' + seatLabel(w) + ' 三次都没给出可执行的动作，判负（与无头评测口径一致）');
-    state.stats.forfeits++;
+    state.stats[w].forfeits++;
     await afterOpen(settleForfeit(G, w), true); return;
   }
   // 兜底也走权威合法动作集合，别把转斋 / 破斋动作在 legalCounts×legalFaces 的旧视图里弄丢。
@@ -1322,7 +1368,7 @@ async function startMatch(){
   state.gameNo = Math.max(state.gameNo, prevNo) + 1;
   state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] };
   loadCarry();
-  state.lastAct = { A:'—', B:'—' }; state.stats = newStats();
+  state.lastAct = { A:'—', B:'—' }; state.stats = { A:newStats(), B:newStats() };
   state.started = true; state.running = false; state.busy = false; state.finalizing = false;
   clearConsole();
   addLog('rd', '开桌 · 第 ' + state.gameNo + ' 局：' + esc(A.alias) + '（甲方） vs ' + esc(B.alias) + '（乙方）');
@@ -1355,7 +1401,7 @@ function doReset(){
   state.running = false; state.started = false; state.G = null; state.players = null; state.busy = false; state.finalizing = false;
   // 逐手 / 逐轮的局内上下文随牌桌一起清掉；跨局摘要留在 state.memory，下一局由 loadCarry 取回。
   state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] }; state.carry = { A:[], B:[] };
-  state.lastAct = { A:'—', B:'—' }; state.stats = newStats();
+  state.lastAct = { A:'—', B:'—' }; state.stats = { A:newStats(), B:newStats() };
   clearConsole();
   $('setupBar').classList.remove('locked');
   setState('待布阵', '选择双方模型后开战', '');
@@ -1401,6 +1447,11 @@ function bindAll(){
     const v = Math.min(32768, Math.max(256, +e.target.value || DEFAULT_MAX_TOKENS));
     state.settings.defaultMaxTokens = v; e.target.value = String(v); saveStore();
     $('saveHint').textContent = '新建模型默认预算已设为 ' + v + ' tok（已有模型不受影响）';
+  };
+  if ($('sDefaultEffort')) $('sDefaultEffort').onchange = e => {
+    const v = normalizeEffort(e.target.value);
+    state.settings.defaultEffort = v; e.target.value = v; saveStore();
+    $('saveHint').textContent = '新建模型默认思考强度已设为「' + effortLabel(v) + '」（已有模型不受影响）';
   };
 
   for (const [id, key] of [['sCoach','coach'],['sSummary','summary'],['sCarry','carry'],['sGod','god'],['sStrict','strict']]) {

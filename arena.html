@@ -306,6 +306,12 @@
           <label class="field"><span>最多轮数 <i>防止长局震荡</i></span><input id="sMaxRounds" type="number" min="3" max="500" step="1" value="60"></label>
           <label class="field"><span>局内全量上下文预算 <i>字符；超出只折叠最早逐手判断，复盘与亮牌事实不丢</i></span><input id="sCtxBudget" type="number" min="2000" max="200000" step="1000" value="24000"></label>
           <label class="field"><span>新建模型默认预算 <i>tokens，各模型可单独改</i></span><input id="sDefaultMaxTokens" type="number" min="256" max="32768" step="256" value="8192"></label>
+          <label class="field"><span>新建模型默认思考强度 <i>各模型可单独改</i></span>
+            <select id="sDefaultEffort">
+              <option value="off">关闭</option><option value="low">轻度</option>
+              <option value="medium" selected>中度</option><option value="high">深度</option>
+            </select>
+          </label>
         </div>
         <label class="field" style="max-width:190px"><span>外观 <i>暗色 / 亮色</i></span>
           <select id="sTheme"><option value="dark">暗色 · 午夜牌桌</option><option value="light">亮色 · 白纸牌桌</option></select>

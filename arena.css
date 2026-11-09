@@ -407,6 +407,31 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .stat-card .v.warn{color:var(--warn)}
 .stat-card .s{font-size:10.5px;color:var(--faint);margin-top:2px}
 
+/* ---- 统计：按模型左右对照 ---- */
+.stats-head,.stat-row{display:grid;grid-template-columns:minmax(120px,1.5fr) 1fr 1fr;gap:10px;align-items:center}
+.stats-head{padding:0 2px 9px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.stats-head .sh-k{font-size:10.5px;color:var(--faint);letter-spacing:1px}
+.sh-v{display:flex;flex-direction:column;gap:2px;min-width:0}
+.sh-v b{font-size:12.5px;color:var(--txt);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-v i{font-style:normal;font:9.5px/1 var(--mono);letter-spacing:1.2px;color:var(--faint)}
+.sh-v.a b{color:var(--a)}
+.sh-v.b b{color:var(--b)}
+.stats-rows{display:flex;flex-direction:column}
+.stat-row{padding:8px 2px;border-bottom:1px solid var(--line);transition:background .2s}
+.stat-row:last-child{border-bottom:none}
+.stat-row:hover{background:rgba(127,160,255,.05)}
+.sr-k{font-size:11.5px;color:var(--txt);display:flex;flex-direction:column;gap:2px;min-width:0}
+.sr-k i{font-style:normal;font-size:9.5px;color:var(--faint)}
+.sr-v{
+  font:600 15px/1.3 var(--mono);text-align:right;padding:4px 9px;border-radius:8px;
+  border:1px solid transparent;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.sr-v.a{color:var(--a);background:rgba(100,185,255,.07)}
+.sr-v.b{color:var(--b);background:rgba(255,144,104,.07)}
+.sr-v.win{border-color:var(--gold);color:var(--gold2);background:var(--gold-dim)}
+.sr-v.lose{opacity:.62}
+.stats-foot{margin-top:11px;padding-top:10px;border-top:1px solid var(--line);font-size:10.5px;color:var(--faint)}
+
 .foot{display:flex;justify-content:space-between;gap:14px;padding:16px 4px 0;font-size:10.5px;color:var(--faint);letter-spacing:.3px}
 
 /* ---------------- 设置抽屉 ---------------- */
@@ -605,6 +630,11 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 [data-theme="light"] .tab i,
 [data-theme="light"] .tabs,
 [data-theme="light"] .think-cap{background:rgba(30,45,70,.045)}
+/* 统计对照表：亮色下用更淡的底色，胜出方仍走金色 */
+[data-theme="light"] .sr-v.a{background:rgba(0,132,255,.07)}
+[data-theme="light"] .sr-v.b{background:rgba(255,110,50,.07)}
+[data-theme="light"] .sr-v.win{background:var(--gold-dim);border-color:var(--gold)}
+[data-theme="light"] .stat-row:hover{background:rgba(30,45,70,.035)}
 [data-theme="light"] .status-pill.busy{background:var(--seat-dim)}
 [data-theme="light"] .status-pill.win{background:var(--gold-dim)}
 [data-theme="light"] .preset.editing{background:var(--gold-dim)}

@@ -168,7 +168,7 @@ node src/pk.js --p0 llm:8080:model-a --p1 llm:8081:model-b --deals 10 --rules fl
 node src/analyze.js runs/llm.jsonl
 ```
 
-**player 规格**：`threshold[:阈值]`（默认 0.5）/ `random` / `always-open` / `never-open` / `llm:<端口>:<模型名>` / `wb:<模型名>`（本地网关）
+**player 规格**：`threshold[:阈值]`（默认 0.5）/ `random` / `always-open` / `never-open` / `oracle`（纯数学参照，见下）/ `reader`（贝叶斯读喊价，见下）/ `llm:<端口>:<模型名>` / `wb:<模型名>`（本地网关）
 
 **开关**：`--deals N --seed S --target 分 --max-rounds N --thinking on|off --effort off|low|medium|high|xhigh --rules classic|flex|<自定义id> --max-tokens N --temperature T --coach（仅 classic 生效） --context chat|memory|snapshot --prompt classic|probe --out 文件 [--append]`
 
@@ -188,6 +188,34 @@ node src/analyze.js runs/llm.jsonl
 | `probe` | 轻量引导臂：保留「知己知彼，百战不殆」但**不解释、不展开**；删掉全部可执行结论与数字（概率表、诈唬占比…），只留一个张力陈述 + 一组自问清单 + 一条元认知触发 |
 
 `probe` 明确忽略 `--coach`（那是历史遗留的强引导臂，与它直接冲突）。
+
+### 纯数学 oracle 参照
+
+`oracle` 是零训练、零拟合参数、确定性的**两层 expectimax**：精确二项/多项分布算概率，枚举对手 252 种手牌型；假设对手按「P<0.5 开盅、否则抬最真价」的数学打法，算到对手反抬后我方的最佳回应。它是「数学对数学」的**地板参照**——LLM 打赢它才算展现出超越算概率的博弈能力；但它不是 GTO 天花板，对手实际打法偏离模型假设时强度会打折。
+
+校准（classic，100 deal 复式 = 200 局，target 10，seed 12345）：
+
+| 对手 | oracle 胜率（计分局） | 配对 95% CI |
+| --- | --- | --- |
+| threshold(0.5) | 145 胜 32 负 23 平（81.9%） | [0.74, 0.828] |
+| threshold(0.5)（flex） | 154 胜 42 负 4 平（78.6%） | [0.723, 0.833] |
+| random / always-open / never-open | 全胜 | [1, 1] |
+
+对 threshold 的过程指标：开盅正确率 0.369 vs 0.197，受骗率 0.023 vs 0.062，诈唬被抓 510 vs 1127。
+
+**首个 LLM 实测（2026-11-10，flex，`wb:minimax-m3.1-flash`，effort off / 2048 / chat / classic 臂，4 deal 复式 target 5）**：oracle **5-3** 胜（MiniMax 胜率 37.5%，配对 CI [0.125, 0.5]，小样本不能排除均势）。过程指标方向一致：开盅正确率 MiniMax 0.162 vs oracle 0.370，诈唬被抓 20 vs 6；零判负零截断零连接错误（输的是决策质量，不是规则理解）。MiniMax 的 3 胜全部来自**信息性喊价剥削**：oracle 的对手模型把喊价当无信息随机事件，「P<0.5 必劈」被真货价值喊价双倍收割（那 3 局 oracle 开盅 18 次只对 2 次）；但它自己的开盅纪律差，系列赛仍输。结论：纯数学地板能被「知己知彼」式打法剥削——这是设计内的能力信号；要把地板升成绝对标尺，需给对手模型加贝叶斯读牌（喊价即信息）乃至 CFR。
+
+### 读牌 reader（贝叶斯对手模型）
+
+`reader` 修掉 oracle 的可剥削点：不再把对手喊价当无信息随机事件，而是在 252 种对手手牌型上维护贝叶斯后验。生成模型——P(开盅|h)=logistic(γ·(0.5−P(当前价|h)))、P(喊 b|h)=(1−P开)·softmax(β·P(b|h))，再加 ε 均匀混合防模型失配；每看到一手喊价按似然更新权重，轮内累积、每轮重置（骰子每轮重摇）。开盅/劈 EV 用后验真值概率，抬价 EV 对后验做 expectimax，叶子用对手反价再更新一次后验。β/γ/ε 是固定行为假设，零训练、零对局拟合、确定性。期望枚举按「同面取最小个数」剪枝（策略等价类，|合法价| 54→12），信念更新仍用全支撑。
+
+校准（target 10，30 deal 复式 = 60 局，零 token）：对 oracle **classic 98.3%（CI 95.8–100）/ flex 60-0 零封**（开盅正确率 0.477 vs 0.153）；对 threshold flex **60-0**（0.723 vs 0.152）。同一局面下 v2 会劈的价值喊价，reader 不劈——唯一变量就是读牌。
+
+MiniMax 实测（2026-11-10，flex、target 10、2 deal 复式 = 4 局）：**reader 4-0 完封**（10:-6 / 10:0 / 10:0 / 10:2，两座位各两局）。开盅正确率 **0.875**（16 开 14 对，其中劈 11 次）vs MiniMax **0.167**（36 开 6 对）；0 判负 0 截断 2 重写。对照：同一模型 target 5 对 v2 oracle 是 3-5 输——补上「读喊价」后一局都拿不下。成本 137 调用 / 33.6 credits。
+
+本地模型实测（同参，`llm:1235:avalon-iq3ks-256k`，flex target 10，2 deal）：**reader 4-0**（10:0 / 10:1 / 10:4 / 10:-7），开盅正确率 **0.769** vs avalon **0.289**；155 调用 2 次 length 截断、12 次重写、**2 次判负**（第 4/5 轮的格式失败丢轮，非策略亏损，量化时需剥离）。avalon 的逐手推理里 78/123 次察觉到「套路被看穿」，但手牌级泄露（喊价即情报）只闪现 1 次（第 4 局喊自己没有的 4 污染对手信念），未固化成策略；chat 臂无轮末复盘，测的是临场能否想到。
+
+**probBidTrue 修复（2026-11-10）**：引擎的二项尾概率此前从 c=1 起步而非 C(5,need)，整条概率被系统性低估（need=1 时 0.17 vs 真值 0.87）。只有 bot 在用这个函数；提示词里的概率表是独立写死的正确值，**prompt_hash 不变，历史 LLM 对局数据仍可比**；但所有 threshold 基线旧数据作废。修复后 threshold 对 never-open 50 deal 全胜——旧记录里「阈值输给 never-open 的非传递性」主要是这个 bug 的伪影，不是博弈深度证据。
 
 ### 落盘约定
 
@@ -274,7 +302,7 @@ src/                  共享引擎与无头评测
   dice-engine.js      规则引擎：合法动作集合、状态推进、结算（UMD，浏览器/Node 共用）
   dice-rules.js       行动解析与合法性措辞（UMD）
   context.js          提示词与上下文构建（UMD，页面与 Node 共用）
-  bots.js             基线 bot：阈值 / 随机 / 常开 / 常不开
+  bots.js             基线 bot：阈值 / 随机 / 常开 / 常不开 + 纯数学 oracle（两层 expectimax）+ 读牌 reader（贝叶斯后验）
   llm.js              模型玩家：多臂上下文、截断续写、思考强度
   runner.js           复式赛 + 过程指标 + 配对 bootstrap
   pk.js               CLI 入口
@@ -286,6 +314,9 @@ tests/                回归与离线冒烟（零 token、不触网）
   smoke-chat.js       持久对话模式冒烟（桩 fetch）
   smoke-memory.js     摘要链模式冒烟（桩 fetch）
   test-echo-prune.js  回声不入库 / 不级联回归
+  test-oracle.js      概率对拍 7776 枚举 + oracle 性质/冒烟回归
+  test-reader.js      读牌后验方向/剥削点修复/确定性/冒烟
+  test-ranking.js     Elo 排名：分组/对手强度/身份合并/路径依赖
 
 runs/               实验产物（gitignore）：--out 落盘、calls.jsonl、serve.log
 docs/
@@ -302,7 +333,8 @@ docs/
 - **页面只采集 `completion_tokens`**，没有 `prompt_tokens` / `cached_tokens`，KV cache 是否命中在页面侧不可测（CLI 侧有 `cacheRate`）
 - **`--out` 默认覆盖写**，同一文件重跑会覆盖旧数据（这是刻意的，见「落盘约定」）
 - **"可复现"目前只保证骰子**：模型侧 seed 未固定，`temperature` 默认 0.7
-- 基线 bot 是**校准参照**而非不可战胜的标准——阈值 bot 输给 never-open 是游戏有博弈深度的证据，不是 bug
+- 基线 bot 是**校准参照**而非不可战胜的标准；oracle 也只是「数学对数学」地板，不是 GTO 天花板——打赢 oracle 是博弈能力的必要非充分证据
+- **2026-11-10 前的 threshold 基线数据作废**（probBidTrue 二项系数 bug，见「纯数学 oracle 参照」）；LLM 历史数据不受影响
 
 ---
 

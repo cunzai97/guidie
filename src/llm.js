@@ -136,7 +136,13 @@ function makeLLMPlayer(cfg, log = () => {}) {
       } catch (e) {
         lastErr = e;
         log({ kind: 'conn-error', name, attempt: i + 1, ...callKey, error: String(e).slice(0, 200), ms: Date.now() - t0 });
-        if (i < connRetries) await sleep(2000 * (i + 1));
+        if (i < connRetries) {
+          // 429 限频：上游会给 retry_after（秒），固定退避 2s/4s/6s 撞不满窗口会把整局打成未评。
+          // 从错误文本里取 retry_after / retry in Ns，等足（+3s 抖动），上限 120s 防呆。
+          const msg = String(e && e.message || e);
+          const ra = /retry[_ ]?(?:after|in)[^\d]{0,6}(\d+)/i.exec(msg);
+          await sleep(ra ? Math.min(120000, (+ra[1] + 3) * 1000) : 2000 * (i + 1));
+        }
       } finally {
         // 连接失败/超时分支也必须清掉定时器，否则默认 300s 的句柄会一直挂住进程
         clearTimeout(timer);
@@ -178,8 +184,11 @@ function makeLLMPlayer(cfg, log = () => {}) {
       }
       // 无合法行动：回声用中性标记替换（不让模型照抄上一手的退化模式），其余保留原文供纠正。
       // finish_reason=length 且没解析出行动 → 静默截断，显式当作无效重写。
-      // 截断时完整保留未完思考（不能换成中性标记），供模型接着想完
-      work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : out.content) });
+      // 截断时完整保留未完思考（不能换成中性标记），供模型接着想完。
+      // 空正文（部分思考模型只吐 reasoning_content）必须替换占位：kimi 上游会因历史里
+      // 存在空 content 消息直接 400 拒绝整个请求，重试脚手架带着空消息会连撞 4 次把整局打成未评。
+      const emptyBody = !String(out.content || '').trim() && out.finish !== 'length';
+      work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : (emptyBody ? '（输出为空：只有思考没有正文，需重新给出判断与行动）' : out.content)) });
       work.push({ role: 'user', content: retryMessage(out, echo, ask, prompt, RULE) });
     }
     // 有限重写后仍非法 → 判负（harness 不替它走棋）；持久历史只留中性判负记录，不留回声。
@@ -216,8 +225,9 @@ function makeLLMPlayer(cfg, log = () => {}) {
         work.push({ role: 'user', content: '你上次的行动「' + (parsed.text || '') + '」不合规则：' + why + '\n请重新给出一个合法行动。' });
         continue;
       }
-      // 截断时完整保留未完思考（不能换成中性标记），供模型接着想完
-      work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : out.content) });
+      // 截断时完整保留未完思考（不能换成中性标记），供模型接着想完；空正文换占位防上游 400
+      const emptyBody = !String(out.content || '').trim() && out.finish !== 'length';
+      work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : (emptyBody ? '（输出为空：只有思考没有正文，需重新给出判断与行动）' : out.content)) });
       work.push({ role: 'user', content: retryMessage(out, echo, ask, prompt, RULE) });
     }
     working.push({ role: 'assistant', content: '（本回合我未能给出合法行动，判负。）' });

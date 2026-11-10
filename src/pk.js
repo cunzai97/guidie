@@ -6,7 +6,7 @@
  *   node src/pk.js --p0 llm:1235:avalon --p1 llm:1236:minimax --deals 6 --context memory --prompt probe
  *   node src/pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
  *   node src/pk.js --p0 threshold --p1 random --deals 6 --rules flex --effort high
- * player 规格：threshold[:阈值] | random | always-open | never-open | llm:端口:模型名
+ * player 规格：threshold[:阈值] | random | always-open | never-open | oracle（纯数学精确期望）| reader（贝叶斯读喊价）| llm:端口:模型名
  * 规则集：--rules classic|flex|自定义id（自定义套从 presets.json 的 settings.ruleSets 读）
  */
 const fs = require('fs');
@@ -77,6 +77,8 @@ function makePlayer(spec, globalOpts, log) {
   if (spec === 'random') return bots.randomBot(E.mulberry32(globalOpts.seed || 1));
   if (spec === 'always-open') return bots.alwaysOpenBot();
   if (spec === 'never-open') return bots.neverOpenBot();
+  if (spec === 'oracle') return bots.oracleBot();
+  if (spec === 'reader') return bots.readerBot();
   throw new Error('未知 player 规格: ' + spec);
 }
 

@@ -36,9 +36,10 @@
     const need = bid.count - countFace(ownDice, bid.face, bid.zhai);
     if (need <= 0) return 1;
     if (need > 5) return 0;
-    let s = 0, c = 1;                              // 二项分布 C(5,k) p^k (1-p)^(5-k)
-    for (let k = need; k <= 5; k++) {
-      if (k > need) c = c * (6 - k) / k;
+    const C5 = [1, 5, 10, 10, 5, 1];
+    let s = 0, c = C5[need];                     // 二项分布 C(5,k) p^k (1-p)^(5-k)
+    for (let k = need; k <= 5; k++) {            // c 必须从 C(5,need) 起步：旧版从 1 起步，
+      if (k > need) c = c * (6 - k) / k;         // 整条尾概率被除以 C(5,need)，系统性低估（阈值 bot 因此异常激进）
       s += c * Math.pow(p, k) * Math.pow(1 - p, 5 - k);
     }
     return Math.min(1, Math.max(0, s));

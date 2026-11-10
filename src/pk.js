@@ -6,7 +6,7 @@
  *   node src/pk.js --p0 llm:1235:avalon --p1 reader --deals 2 --rules flex --hp 10
  *   node src/pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
  *   node src/pk.js --p0 reader --p1 oracle --deals 6 --rules flex --effort high
- * player 规格：oracle | reader | deep（见 bots.js 的 BOTS 注册表）| llm:端口:模型名 | wb:模型名
+ * player 规格：oracle | reader | deep（见 bots.js 的 BOTS 注册表）| llm:端口:模型名 | wb:模型名（WorkBuddy :8791）| qd:模型名（Qoder :8790）
  * 规则集：--rules classic|flex|自定义id（自定义套从 presets.json 的 settings.ruleSets 读）
  * 计分：血量制。--hp N（或旧名 --target N）= 开局血量兼上限，谁的血先降到 0 谁输。
  * 提示词臂：--prompt <id>（注册表见 context.js 的 ARMS；当前只有 plain=规则 + 这局怎么赢 + 一句话）。
@@ -54,6 +54,19 @@ function resolveRules(id) {
   return RS.normalize('classic');
 }
 
+// Qoder 网关的本机 Key：优先环境变量，其次 qoder-api 落盘的那份（只读，不外发）
+function qdKey() {
+  if (process.env.QD_KEY) return process.env.QD_KEY;
+  const fs = require('fs'), path = require('path'), os = require('os');
+  for (const f of ['~/work/qoder-api/.qd-auto-key.txt', '~/.qoder-api-key.txt']) {
+    try {
+      const t = fs.readFileSync(f.replace('~', os.homedir()), 'utf8').trim();
+      if (t) return t;
+    } catch (e) { /* 没这份就继续 */ }
+  }
+  throw new Error('找不到 Qoder 网关 Key：设 QD_KEY 环境变量，或写到 ~/.qoder-api-key.txt');
+}
+
 function makePlayer(spec, globalOpts, log) {
   const reflectOpts = {
     reflectTokens: globalOpts.reflectTokens, reflectEffort: globalOpts.reflectEffort,
@@ -64,7 +77,17 @@ function makePlayer(spec, globalOpts, log) {
       name: model, baseUrl: WB_BASE + '/v1', model, apiKey: wbKey(),
       thinking: false, thinkingKwargs: false, effort: globalOpts.effort, maxTokens: globalOpts.maxTokens,
       temperature: globalOpts.temperature, context: globalOpts.context,
-      rules: globalOpts.rules, prompt: globalOpts.prompt, ...reflectOpts,
+      rules: globalOpts.rules, prompt: globalOpts.prompt, ctxLimit: globalOpts.ctxLimit, ...reflectOpts,
+    }, log);
+  }
+  if (spec.startsWith('qd:')) {
+    // Qoder 网关（:8790）：模型名用它自己的写法（Qwen3.8-Max / DeepSeek-Flash / Auto …）
+    const model = spec.slice(3);
+    return makeLLMPlayer({
+      name: model, baseUrl: 'http://127.0.0.1:8790/v1', model, apiKey: qdKey(),
+      thinking: globalOpts.thinking, thinkingKwargs: false, effort: globalOpts.effort,
+      maxTokens: globalOpts.maxTokens, temperature: globalOpts.temperature,
+      context: globalOpts.context, rules: globalOpts.rules, prompt: globalOpts.prompt, ctxLimit: globalOpts.ctxLimit, ...reflectOpts,
     }, log);
   }
   if (spec.startsWith('llm:')) {
@@ -73,7 +96,7 @@ function makePlayer(spec, globalOpts, log) {
       name: model, baseUrl: `http://127.0.0.1:${port}/v1`, model,
       thinking: globalOpts.thinking, effort: globalOpts.effort, maxTokens: globalOpts.maxTokens,
       temperature: globalOpts.temperature, context: globalOpts.context,
-      rules: globalOpts.rules, prompt: globalOpts.prompt, ...reflectOpts,
+      rules: globalOpts.rules, prompt: globalOpts.prompt, ctxLimit: globalOpts.ctxLimit, ...reflectOpts,
     }, log);
   }
   // bot 规格统一从 bots.js 的注册表取（oracle / reader / deep …），加新 bot 不用改这里
@@ -100,7 +123,8 @@ async function main() {
     context: arg('context', 'chat'),   // chat=持久逐字对话(默认) | memory=追加式摘要链(轮末自总结压缩) | snapshot=窗口快照(对比臂)
     rules: resolveRules(arg('rules', 'classic')),
     // 连败反思臂：局内连续输满 N 轮触发一次深度总结，反思文本取代兵书与此前所有总结。0=关闭
-    reflectAfter: parseInt(arg('reflect', '0'), 10),
+    ctxLimit: parseInt(arg('ctx-limit', '32768'), 10),   // 上下文窗口（token）；消息流到 80% 触发复盘压缩
+    reflectAfter: parseInt(arg('reflect', '4'), 10),   // 0=关闭；默认连输 4 轮触发深度反思
     reflectTokens: parseInt(arg('reflect-tokens', '16384'), 10),
     reflectEffort: arg('reflect-effort', 'high'),
   };

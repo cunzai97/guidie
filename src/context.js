@@ -46,7 +46,7 @@ const FRAME_PLAIN = '你在和对手一对一打大话骰。';
 // 不写具体招法（该喊什么、什么时候劈），留给模型自己从对手身上长出来。
 const HOWTO_PLAIN = `【赢的秘诀】
 
-这局不是比谁算得准，是比谁读得准。
+算随机概率是最蠢的行为，在喊价那一刻就不再随机。这局不是比谁会算概率，而是比谁读对方更准
 
 你喊的每一手都在暴露你的牌，对手喊的每一手也在暴露它的牌——喊多高、什么时候转斋、什么时候开盅，都是。
 
@@ -333,6 +333,38 @@ function buildTurn(m, who, cursor, opts = {}) {
   return { text: L.join('\n'), next };
 }
 
+/* 连败深度反思的提示词（CLI 的 llm.js 与竞技场共用这一份，措辞只在这里维护）。
+ * 输入是本局逐轮完整记录（双方真实手牌 / 喊价 / 被质疑那一手 / 结算）+ 连输轮数。 */
+function buildReflectPrompt(opts = {}) {
+  const streakN = opts.streak || 0;
+  const seat = opts.seat || 'A';
+  const h = opts.history || [];
+  const me = x => (x === seat ? '你' : '对手');
+  const L = [];
+  L.push(`你正在和同一个对手对局。你目前已经连续输掉 ${streakN} 轮。`);
+  L.push('下面是你本局到目前为止的完整记录：每轮双方真实手牌、喊价、被质疑的那一手、亮牌结算。');
+  for (const r of h) {
+    const handTxt = side => '[' + ((r.dice && r.dice[side]) || []).join(' ') + ']';
+    const b = r.bid || { count: 0, face: 0, by: seat, zhai: false };
+    const z = b.zhai ? '（斋）' : '';
+    const act = r.slash ? '劈' : '开盅';
+    const pay = r.loserPays === false ? '（赢家不回血）' : '';
+    L.push(`第${r.no}轮：你 ${handTxt(seat)}，对手 ${handTxt(seat === 'A' ? 'B' : 'A')}；`
+      + `${me(b.by)}喊 ${b.count}个${b.face}${z}，${me(r.opener)}${act}，全场实际 ${r.actual} 个`
+      + `（${r.truth ? '够' : '不够'}）→ ${me(r.winner)} 赢，${me(r.loser)} 输${pay}。`);
+  }
+  L.push('请做一次深刻的反思总结，把你学到的全部写下来：');
+  L.push('1) 对手的打法规律是什么？它凭什么连续赢你？');
+  L.push('2) 你的哪些判断、习惯、前提错了？被利用的是哪一点？');
+  L.push('3) 接下来每一手具体该怎么打？写成可执行的规则（什么局面开盅/劈、什么局面喊什么、什么时候诈唬）。');
+  L.push('事实提醒：本游戏没有「过 / 接受 / 跟注 / 不质疑」这类选项，轮到你时只能在合法喊价或开盅/劈之间选择。');
+  L.push('不要省略，不要客套，尽量详尽。这段总结立刻生效，成为你此后这局的打法指导。');
+  return [
+    { role: 'system', content: '你正在复盘自己连输的对局，目标是把教训写成可执行的打法规则。' },
+    { role: 'user', content: L.join('\n') },
+  ];
+}
+
 function buildSummaryPrompt(m, who, result, opts = {}) {
   const R = rulesOf(opts.rules || m.rules);
   const opp = E.other(who);
@@ -397,7 +429,7 @@ function promptTexts(rules, variant) {
 }
 
 const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, memoryMarker,
-  legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts,
+  legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts, buildReflectPrompt,
   extractJudgment, parseAction, checkLegal, isPromptEcho, ACTION_LINE_RE: RUL.ACTION_LINE_RE,
   RULES_TPL,
   FRAME_PLAIN, HOWTO_PLAIN, FORMAT_PLAIN, FORMAT_PLAIN_CLASSIC, SUMMARY_INSTRUCTION_PLAIN, CUE_PLAIN,

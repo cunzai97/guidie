@@ -109,6 +109,21 @@ async function run() {
     assert.ok(A.state.memos.A.length === 0, '机器人席位不应写入复盘');
     console.log('[3] 机器人整局对战 ✓  血量 ' + G.hp.A + ':' + G.hp.B + ' · ' + G.roundNo + ' 轮 · 胜者 '
       + (G.winner ? A.seatLabel(G.winner) : '平局'));
+
+    // [4] 连败反思的触发计数（真模型调用要接口，这里只验触发时机与清零）
+    A.state.settings.reflect = 2;
+    A.state.reflect = { text:{A:'',B:''}, streak:{A:0,B:0}, round:{A:null,B:null} };
+    const lose = { loser:'A', winner:'B' };
+    assert.deepStrictEqual(A.noteReflectStreak(lose), [], '连输 1 轮不触发');
+    assert.deepStrictEqual(A.noteReflectStreak(lose), ['A'], '连输 2 轮触发反思');
+    assert.strictEqual(A.state.reflect.streak.A, 2);
+    assert.deepStrictEqual(A.noteReflectStreak({ loser:'B', winner:'A' }), [], '换人连输从 0 数');
+    assert.strictEqual(A.state.reflect.streak.A, 0, '赢一轮即清零');
+    assert.strictEqual(A.state.reflect.streak.B, 1);
+    const botSeat = A.state.players.A;
+    assert.strictEqual(botSeat.kind, 'bot');
+    await A.requestReflect('A', 2).then(t => assert.strictEqual(t, '', '机器人席位不发反思请求'));
+    console.log('[4] 连败反思：连输 N 轮触发 / 赢一轮清零 / 机器人跳过 ✓');
     console.log('==> ALL PASS');
   })();
 }

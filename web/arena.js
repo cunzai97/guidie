@@ -14,6 +14,7 @@
 
 const E = root.DiceEngine, R = root.DiceRules, C = root.DiceContext, RS = root.DiceRulesets, RK = root.ArenaRanking;
 const BOT = root.DiceBots;   // 内置机器人（与 CLI / 测试共用同一份实现）
+const CXLOG = root.DiceCtxLog;   // 上下文消息流（append-only，与 CLI 共用）
 const doc = typeof document !== 'undefined' ? document : null;
 const $ = id => doc.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -41,7 +42,7 @@ const BUILTIN = [
   { id:'bl-kimi',    alias:'Kimi K3.1 Pro', base:GW, model:'kimi-k3.1-pro',       color:'#ff7fa8', note:'示例 · OpenAI 兼容端点' },
 ];
 const DEFAULT_SETTINGS = {
-  target:10, speed:400, variant:'plain', summary:true, god:false, strict:true, maxRounds:60,
+  target:10, speed:400, variant:'plain', summary:true, reflect:4, god:false, strict:true, maxRounds:60,
   defaultMaxTokens:8192,   // 只是「新建模型 / 配置缺项」时的缺省；每个模型自己的预算始终独立可改
   defaultEffort:'medium',  // 同上：新建模型 / 配置缺项时的缺省思考强度（off/low/medium/high）
   theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
@@ -59,6 +60,7 @@ const state = {
   G:null, players:null, started:false, running:false, busy:false, god:false,
   runId:'', gameNo:0, memos:{A:[],B:[]}, ownMemo:{A:[],B:[]},
   lastAct:{A:'—',B:'—'}, thinkMode:{A:'',B:''}, thinkLive:{A:null,B:null}, pendingReset:false,
+  reflect:{ text:{A:'',B:''}, streak:{A:0,B:0}, round:{A:null,B:null} },
   flowEl:null, decCols:null, memoCols:null, rankGroup:'', rankEffort:'all',
   stats:{ A:newStats(), B:newStats() }, editingId:null, editColor:PALETTE[0], ruleEditingId:null,
 };
@@ -521,6 +523,7 @@ function renderPicks(){
 function syncQuick(){
   $('qTarget').value = String(state.settings.target);
   $('qSpeed').value = String(state.settings.speed);
+  if ($('qReflect')) $('qReflect').value = String(state.settings.reflect == null ? 4 : state.settings.reflect);
   // 提示词臂下拉：按 context.js 的注册表生成，以后加新臂不用改这里
   if ($('qVariant')) {
     $('qVariant').innerHTML = Object.keys(C.ARMS).map(id =>
@@ -1018,8 +1021,20 @@ async function decide(w, label){
   const G = state.G, r = G.round, p = state.players[w], variant = state.settings.variant;
   if (p.kind === 'bot') return decideBot(w, label);
   const RR = activeRules();
+  // system 一局只写一次；连败反思不再改它（反思作为一条 assistant 记忆取代历史）
   const sys = C.buildSystem(G.hpMax, { variant, rules:RR });
-  let msgs = [{ role:'system', content:sys }, { role:'user', content:userText(w) }];
+  if (!state.logs[w]) state.logs[w] = CXLOG.create({ system: sys, ctxLimit: state.settings.ctxLimit || 32768 });
+  const log = state.logs[w];
+  if (log.round() !== G.roundNo) {
+    log.beginRound(G.roundNo);
+    const cp = log.compactIfNeeded();                      // 只到上下文的 80% 才动作
+    if (cp) addLog('muted', seatLabel(w) + ' 上下文达阈值，已把最早 ' + cp.merged + ' 轮复盘压成一条摘要');
+  }
+  // 这一手只追加"新发生的事"（buildTurn 是增量渲染，不再重述骰子与历史）
+  const t = C.buildTurn(G, w, state.cursor[w], { variant, rules:RR });
+  state.cursor[w] = t.next;
+  log.appendUser(t.text);
+  let msgs = log.snapshot();
   let action = null, tries = 0, ms = 0, tokens = 0, netSum = 0, truncated = 0, ambiguous = false, note = '';
   const raws = [], reasons = [];
 
@@ -1054,21 +1069,22 @@ async function decide(w, label){
       const why = R.checkLegal(r, pa.action);
       if (!why) { action = pa.action; break; }
       note = '「' + (pa.text || '') + '」执行不了：' + why;
-      msgs = msgs.concat([
-        { role:'assistant', content:out.raw },
-        { role:'user', content:'上次你写的是「' + String(out.raw).slice(0,80) + '」，这一手执行不了：' + why
-            + '。请只回一行行动：' + actionHint(RR, !!r.bid) + '。' },
-      ]);
+      log.appendAssistant(out.raw).appendUser('上次你写的是「' + String(out.raw).slice(0,80) + '」，这一手执行不了：' + why
+            + '。请只回一行行动：' + actionHint(RR, !!r.bid) + '。');
+      msgs = log.snapshot();
     } else {
       note = isCut ? '输出被截断，未拿到完整行动行' : '没看出要做什么';
       const words = actionHint(RR, !!r.bid);
       const hint = isCut
         ? '你上一段回答被输出长度截断了。接着它原来的思路往下想完，立即做出决断，不要从头重来、不要只写分析。最后另起一行给出行动：' + words + '。'
         : '上次你写的是「' + String(out.raw).slice(0,80) + '」，我没看出你要做什么。请只回一行行动：' + words + '。';
-      msgs = msgs.concat([{ role:'assistant', content:out.raw }, { role:'user', content:hint }]);
+      log.appendAssistant(out.raw).appendUser(hint);
+      msgs = log.snapshot();
       if (isCut) thinkNote(w, '输出被截断 · 带着原思考续写一次');
     }
   }
+  if (action) log.appendAssistant(raws[raws.length - 1] || '');
+  else log.appendAssistant('（本回合我未能给出合法行动，判负。）');
   if (!action) state.stats[w].invalid++;
   // 重写次数：一次决策里为拿到合法动作而额外问了几次（calls - steps 的来源）。
   if (tries > 1) state.stats[w].rewrites += tries - 1;
@@ -1214,12 +1230,47 @@ async function requestSummary(w, msgs, tag){
   return text;
 }
 // 双方复盘互不依赖：并发发出，等两份都回来再一起写回上下文，避免任何一方读到对方这轮的复盘。
+// 连败深度反思：与轮末复盘同一套调用路径，但预算更足、单次不重写。
+// 结果写进 state.reflect.text[w]，此后该席位的 system 提示会带上这一段（拼接，不替代规则与秘诀）。
+async function requestReflect(w, streakN){
+  const p = state.players[w];
+  if (!p || p.kind === 'bot') return '';
+  const msgs = C.buildReflectPrompt({ streak: streakN, seat: w, history: state.G.history });
+  thinkStart(w, '连败反思');
+  thinkNote(w, '连输 ' + streakN + ' 轮 · 写深度反思（' + (p.alias) + '）');
+  let text = '';
+  try {
+    const out = await callWithRetry(Object.assign({}, p, { thinking:false, effort:'off' }), msgs, null, w, 'reflect',
+      Math.max(p.maxTokens || 0, state.settings.reflectTokens || 8192), null, 2);
+    text = cleanSum(out.raw) || cleanSum(out.reason);
+    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
+    if (out.finish === 'length') thinkNote(w, '输出被 max_tokens 截断（反思已保存，可调大预算）');
+  } catch (e) {
+    thinkEnd(w, '失败');
+    thinkNote(w, '反思请求失败：' + String(e.message || e).slice(0, 80));
+  }
+  return text;
+}
+function noteReflectStreak(res){
+  const N = state.settings.reflect || 0;
+  if (!N || !res || !res.loser) return [];
+  const loser = res.loser, winner = E.other(loser);
+  state.reflect.streak[loser] = (state.reflect.streak[loser] || 0) + 1;
+  state.reflect.streak[winner] = 0;
+  const st = state.reflect.streak[loser];
+  if (st % N !== 0) return [];
+  return [loser];   // 触发一次深度反思
+}
 async function summarizeRound(res){
   const roundNo = state.G.roundNo;
   const jobs = ['A','B'].map(async w => {
     if (state.players[w] && state.players[w].kind === 'bot') return { w, text:'（内置机器人不做复盘。）' };
-    const msgs = summaryMessages(state, w, res, state.settings.variant, null, { budget:state.settings.ctxBudget });
+    const lg = state.logs[w];
+    const user = C.buildSummaryPrompt(state.G, w, res, { variant:state.settings.variant, rules:state.G.rules });
+    const msgs = (lg ? lg.snapshot() : []).concat([{ role:'user', content:user }]);
     const text = await requestSummary(w, msgs, 'summary') || '（本轮未形成复盘。）';
+    // 整轮逐手原文被这一条复盘取代（模型自己的输出，角色 assistant）
+    if (lg) { lg.finalizeRound(text); state.cursor[w] = null; }
     return { w, text };
   });
   const out = await Promise.all(jobs);
@@ -1254,6 +1305,20 @@ async function afterOpen(res, forfeit){
   showReveal(res, forfeit); render(); renderStats();
   await sleep(Math.max(500, Math.min(1600, state.settings.speed || 400)));
   $('reveal').hidden = true;
+  // 连败反思：输满 N 轮的席位写一次深度反思，此后它的 system 提示会带上这一段。
+  for (const w of noteReflectStreak(res)) {
+    const st = state.reflect.streak[w];
+    addLog('ow', seatLabel(w) + ' 已连输 ' + st + ' 轮，进入深度反思…');
+    const txt = await requestReflect(w, st);
+    if (txt) {
+      const lg = state.logs[w];
+      if (lg) { lg.applyReflection(txt); state.cursor[w] = null; }   // 只剩 system + 反思
+      state.reflect.text[w] = txt;
+      state.reflect.round[w] = G.roundNo;
+      addMemo(w, G.roundNo, '【连败反思 · 连输 ' + st + ' 轮后重新定调】\n' + txt);
+      addLog('rs', seatLabel(w) + ' 的连败反思已生效（此后它的系统提示里带这一段）');
+    }
+  }
   // 每一轮（含最后一轮）都做轮末复盘，口径一致；复盘只留在本局上下文与复盘面板，不带入下一局。
   if (state.settings.summary && ['A','B'].some(x => state.players[x].kind !== 'bot')) {
     addLog('muted', '第 ' + G.roundNo + ' 轮结束，复盘总结中…');
@@ -1529,6 +1594,8 @@ async function startMatch(){
   state.runId = 'arena-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,6);
   state.gameNo++;
   state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] };
+  state.reflect = { text:{ A:'', B:'' }, streak:{ A:0, B:0 }, round:{ A:null, B:null } };   // 连败反思按局清零
+  state.logs = { A:null, B:null };  state.cursor = { A:null, B:null };   // 上下文消息流（每局重建）
   state.lastAct = { A:'—', B:'—' }; state.stats = { A:newStats(), B:newStats() };
   state.started = true; state.running = false; state.busy = false;
   clearConsole();
@@ -1543,7 +1610,8 @@ async function startMatch(){
     + (A.kind === 'bot' && B.kind === 'bot' ? ''
         : ' · 思考强度 ' + (A.kind === 'bot' ? '（本地）' : effortLabel(state.players.A.effort))
           + ' / ' + (B.kind === 'bot' ? '（本地）' : effortLabel(state.players.B.effort)))
-    + (state.settings.summary ? ' · 双方复盘并行' : '') + ' · 最多 ' + (state.settings.maxRounds || 60) + ' 轮');
+    + (state.settings.summary ? ' · 双方复盘并行' : '') + ' · 最多 ' + (state.settings.maxRounds || 60) + ' 轮'
+    + (state.settings.reflect ? ' · 连输 ' + state.settings.reflect + ' 轮触发深度反思' : ' · 连败反思关闭'));
   $('setupBar').classList.add('locked');
   $('btnGod').classList.toggle('on', state.god);
   $('reveal').hidden = true;
@@ -1562,6 +1630,8 @@ function doReset(){
   state.running = false; state.started = false; state.G = null; state.players = null; state.busy = false;
   // 逐手 / 逐轮的局内上下文随牌桌一起清掉；下一局从空白开始。
   state.memos = { A:[], B:[] }; state.ownMemo = { A:[], B:[] };
+  state.reflect = { text:{ A:'', B:'' }, streak:{ A:0, B:0 }, round:{ A:null, B:null } };
+  state.logs = { A:null, B:null }; state.cursor = { A:null, B:null };
   state.lastAct = { A:'—', B:'—' }; state.stats = { A:newStats(), B:newStats() };
   clearConsole();
   $('setupBar').classList.remove('locked');
@@ -1637,6 +1707,7 @@ function bindAll(){
     };
   }
   if ($('qVariant')) $('qVariant').onchange = e => { state.settings.variant = e.target.value; syncQuick(); saveStore(); };
+  if ($('qReflect')) $('qReflect').onchange = e => { state.settings.reflect = +e.target.value; syncQuick(); saveStore(); };
   for (const id of ['qRules','sRules']) {
     if ($(id)) $(id).onchange = e => setActiveRules(e.target.value);
   }
@@ -1681,7 +1752,7 @@ const ArenaCore = { normalizePreset, normalizeSettings, normalizeEffort, actText
   gameContextText, recallText, summaryMessages, factLine,
   BUILTIN, DEFAULT_SETTINGS, EFFORTS,
   // 机器人席位（'bot:<spec>'）解析 + 对局驱动，供 Node 侧测试直接调用
-  BOT_PREFIX, isBotId, botSeat, playerById, decideBot,
+  BOT_PREFIX, isBotId, botSeat, playerById, decideBot, noteReflectStreak, requestReflect,
   state, startMatch, doReset, init };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaCore;
 else root.ArenaCore = ArenaCore;

@@ -158,24 +158,10 @@ function legalMenu(round, rules) {
   if (!round.zhai && zc != null && zc >= R.minCount) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
   else if (!round.zhai && zc != null && zc < R.minCount) raises.push(`本轮不能转斋：取半只有 ${zc} 个，不足 ${R.minCount} 个`);
   if (round.zhai && bcMin != null && bcMin <= R.maxCount) {
-    const pre = round.preZhai;
-    // 列出第一个能破的个数作例子；往上加个数都可以，只要整手比斋前高
-    let firstOk = null;
-    for (let c = bcMin; c <= R.maxCount && !firstOk; c++) {
-      const bf = E.breakFaces(round, c);
-      if (bf && bf.length) firstOk = { c, bf };
-    }
-    if (firstOk) {
-      const facesTxt = firstOk.bf.length === 6 ? '任意点数' : firstOk.bf.slice().sort((x, y) => E.ord(x) - E.ord(y)).join('/') + ' 任选';
-      raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（到 10 个都行）`
-        + (pre ? `，且整手要严格大于斋前那一手（${pre.count} 个 ${pre.face}）` : '')
-        + `；这一手起 1 恢复万能。例：喊 ${firstOk.c} 个 ${facesTxt} 破斋`
-        + `——不写「破斋」就不算破斋，只是留在斋里的普通抬价`);
-    } else if (pre) {
-      raises.push(`本轮破不了斋：个数要到 ${bcMin} 个以上、又得严格超过斋前那一手（${pre.count} 个 ${pre.face}），凑不出来`);
-    }
+    raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（${bcMin}~10 个都行），点数任选；这一手起 1 恢复万能。`
+      + `例：喊 ${bcMin} 个 ${R.faceFree ? '任意点数' : '1'} 破斋——不写「破斋」就只是留在斋里的普通抬价`);
   } else if (round.zhai && bcMin != null) {
-    raises.push(`本轮破不了斋：个数要翻到 ${bcMin} 个才能破，超过全场 10 颗了`);
+    raises.push(`本轮破不了斋：个数要加到 ${bcMin} 个才够，超过全场 10 颗了`);
   }
   if (b.count < 10) raises.push('把个数加到 ' + (b.count + 1) + '~10 任选（可以一次跳加好几个），此时点数 1~6 任选'
     + (round.zhai ? '、仍留在斋状态' : '')

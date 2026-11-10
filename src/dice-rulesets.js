@@ -22,6 +22,7 @@
     faceFree: false,        // 转斋那一手点数是否任意（false=只能喊 1）
     lockFace: true,         // 斋内是否锁死点数（旧规则：只能继续加 1 的个数）
     breakMultiplier: 0,     // 破斋倍数；0=不允许破斋
+    breakPlus: 0,           // 破斋门槛再加几（新规 = 倍数×当前个数 + 1）
     breakRestoresWild: true,// 破斋后 1 恢复万能
     firstFace1: false,      // 首喊能否喊点数 1
     firstZhai: false,       // 首喊能否直接喊斋（开局就关掉万能 1）
@@ -38,8 +39,8 @@
   const FLEX = {
     id: 'flex', name: '鬼骰新规 · 取半转斋 / 翻倍破斋 / 劈', builtin: true,
     zhaiMode: 'half', halfDivisor: 2, faceFree: true, lockFace: false,
-    breakMultiplier: 2, breakRestoresWild: true,
-    breakMustExceed: true,  // 破斋还须严格大于斋前一手；不给关掉它的自由度，否则转斋→破斋可压价死循环
+    breakMultiplier: 2, breakPlus: 1,   // 破斋 = 当前个数 ×2 +1：一条规则既防压价循环，也不用记斋前那一手
+    breakRestoresWild: true,
     firstFace1: true,  // 首喊点数可以是 1~6（喊 1 只是喊 1：未斋时也只数真 1，不等于进斋）
     firstZhai: true,   // 首喊也能直接喊斋
     firstMin: 2, firstMax: 6, maxCount: 10,
@@ -71,8 +72,8 @@
       faceFree: BOOL(o.faceFree, base.faceFree),
       lockFace: BOOL(o.lockFace, base.lockFace),
       breakMultiplier: INT(o.breakMultiplier, 0, 4, base.breakMultiplier),
+      breakPlus: INT(o.breakPlus, 0, 3, base.breakPlus),
       breakRestoresWild: BOOL(o.breakRestoresWild, base.breakRestoresWild),
-      breakMustExceed: true,   // half 套强制开：这是漏洞修复不是可选参数（同 maxCount 固定 10）
       firstFace1: BOOL(o.firstFace1, base.firstFace1),
       firstZhai: BOOL(o.firstZhai, base.firstZhai),
       minCount: 2,        // 任何喊价的个数下限（固定 2，不可配置）：首喊、转斋取半、破斋都一样
@@ -88,7 +89,7 @@
     // face1 套里这几个字段不是自由度：强置，避免自定义套改出「喊 1 为斋 + 首喊斋」的怪状态。
     if (out.zhaiMode === 'face1') {
       out.breakMultiplier = 0; out.faceFree = false; out.lockFace = true; out.firstZhai = false;
-      out.breakMustExceed = false; out.openLoserLoses = true;   // 经典套必须保持双向零和
+      out.openLoserLoses = true;   // 经典套必须保持双向零和
     }
     return out;
   }
@@ -107,13 +108,12 @@
     const r = normalize(rules);
     const s = [r.id, r.zhaiMode, r.halfDivisor, r.faceFree, r.lockFace, r.breakMultiplier,
       r.breakRestoresWild, r.firstFace1, r.firstMin, r.firstMax, r.slash, r.slashStake, r.stake, r.autoInfer].join('|')
-      // firstZhai / breakMustExceed / openLoserLoses 只在 half 套里才有意义；这样内置 classic 的指纹不因新增参数而漂移。
-      // breakMustExceed 入哈希是语义版本：破斋判定修过（须超斋前），新旧 flex 数据不可比，指纹必须分开。
-      + (r.zhaiMode === 'half' ? '|fz=' + r.firstZhai + '|bme=' + (r.breakMustExceed ? 1 : 0) + '|oll=' + (r.openLoserLoses ? 1 : 0) : '')
+      // firstZhai / openLoserLoses 只在 half 套里才有意义；这样内置 classic 的指纹不因新增参数而漂移。
+      + (r.zhaiMode === 'half' ? '|fz=' + r.firstZhai + '|oll=' + (r.openLoserLoses ? 1 : 0) : '')
       // 计分从"积分制"改成"血量制"（输家掉血、归零判负）：输赢口径变了，新旧数据不可比，指纹必须分开。
       + '|hp=1'
-      // 破斋语义版本 bv=2：个数「至少翻倍」（旧：正好翻倍）+ 必须显式写「破斋」（旧：可按个数自动推断）。
-      + (r.zhaiMode === 'half' && r.breakMultiplier ? '|bv=2' : '')
+      // 破斋语义版本 bv=3：门槛改为「两倍 + 1」（旧：至少翻倍 + 须超斋前那一手）。
+      + (r.zhaiMode === 'half' && r.breakMultiplier ? '|bv=3|bp=' + r.breakPlus : '')
       + (r.zhaiMode === 'half' ? '|mn=' + r.minCount : '')
       // 合法动作集合修正（个数不变可以换到点数 1）：合法集变了，指纹必须分开。
       + (r.zhaiMode === 'half' ? '|sv=2' : '')
@@ -130,7 +130,7 @@
     const bits = [];
     if (r.zhaiMode === 'half') {
       bits.push('取半转斋(÷' + r.halfDivisor + (r.faceFree ? '·点数任意' : '·只喊1') + ')');
-      if (r.breakMultiplier) bits.push('×' + r.breakMultiplier + '破斋' + (r.breakMustExceed ? '·须超斋前' : ''));
+      if (r.breakMultiplier) bits.push('×' + r.breakMultiplier + (r.breakPlus ? '+' + r.breakPlus : '') + '破斋');
       bits.push(r.lockFace ? '斋内锁点数' : '斋内同普通规则');
       if (r.firstZhai) bits.push('首喊可斋');
     } else bits.push('喊1为斋·锁点数');
@@ -156,13 +156,14 @@
         + (r.faceFree ? ' 1~6 任选' : '只能是 1') + '，本轮从此进斋。这是唯一允许个数变小的喊价。'
         + '行动写「喊 X 个 Y 斋」' + (r.autoInfer ? '；漏写「斋」但个数正好是取半值，也按转斋算。' : '，不写「斋」就按普通抬价判。'));
       if (r.breakMultiplier) {
-        L.push('- 破斋：斋状态下同时做到 —— 个数至少是当前的 ' + r.breakMultiplier + ' 倍'
-          + (r.breakMustExceed ? '、整手大于进斋前那一手' : '')
-          + '、行动里写明「破斋」，才回到未斋。条件够却没写「破斋」，只是斋内的普通抬价。'
+        L.push('- 破斋：个数要到当前的 ' + r.breakMultiplier + ' 倍'
+          + (r.breakPlus ? '再加 ' + r.breakPlus : '') + '（当前 n 个就要 ' + r.breakMultiplier + 'n'
+          + (r.breakPlus ? '+' + r.breakPlus : '') + ' 个），并写明「破斋」，才回到未斋；'
+          + '点数任选。个数够了却没写「破斋」，只是斋里的普通抬价。'
           + (r.breakRestoresWild ? '破斋这一手起 1 恢复万能。' : '')
           + '行动写「喊 X 个 Y 破斋」。');
       } else L.push('- 本桌不能破斋：进了斋，本轮剩下的喊价都在斋里。');
-      L.push('- 斋里的抬价规则不变' + (r.lockFace ? '，只是只能加斋那一手的点数，不能换。' : '。'));
+      if (r.lockFace) L.push('- 斋里只能加斋那一手的点数，不能换。');
     } else {
       L.push('- 有人喊到点数 1 即进入斋：此后 1 不算万能，且只能继续加 1 的个数（不能换点数）。');
     }

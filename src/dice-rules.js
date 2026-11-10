@@ -111,14 +111,8 @@
       if (!r.zhai) return '本轮还没进斋，谈不上破斋。';
       const min = E.breakMinCount(r);
       if (min == null || min > R.maxCount) return '翻倍后会超过 10 颗，这一手破不了斋。';
-      if (count < min) return '破斋的个数至少要·到当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍，也就是 ' + min + ' 个以上（至少，不是正好）。';
-      const bf = E.breakFaces(r, count);
-      if (bf && bf.indexOf(face) < 0) {
-        const pre = r.preZhai;
-        if (pre && count === pre.count)
-          return '破斋还要求这一手严格大于斋前那一手：个数同为 ' + pre.count + ' 时，点数要比 ' + pre.face + ' 更大（顺序 2<3<4<5<6<1）；否则转斋再破斋能把价越喊越低。';
-        return '破斋还要求这一手严格大于斋前那一手' + (pre ? '（' + pre.count + ' 个 ' + pre.face + '）' : '') + '，' + count + ' 个超不过它，破不了斋。';
-      }
+      if (count < min) return '破斋的个数要到当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍'
+        + (R.breakPlus ? '再加 ' + R.breakPlus : '') + '，也就是 ' + min + ' 个以上。';
     }
     if (!p) {
       if (count < R.firstMin) return '首喊个数至少 ' + R.firstMin + ' 个。';

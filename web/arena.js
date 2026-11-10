@@ -371,6 +371,7 @@ async function resyncServer(){
 const RULE_FIELDS = [
   ['rId','id'], ['rName','name'], ['rZhaiMode','zhaiMode'], ['rHalfDivisor','halfDivisor'],
   ['rFaceFree','faceFree'], ['rLockFace','lockFace'], ['rBreakMultiplier','breakMultiplier'],
+  ['rBreakPlus','breakPlus'],
   ['rFirstZhai','firstZhai'], ['rFirstFace1','firstFace1'], ['rSlash','slash'],
   ['rSlashStake','slashStake'], ['rStake','stake'], ['rAutoInfer','autoInfer'],
   ['rBreakRestoresWild','breakRestoresWild'], ['rFirstMin','firstMin'], ['rFirstMax','firstMax'],

@@ -87,13 +87,10 @@ function oracleBot() {
       const pCur = r.bid ? pOwn(r.bid) : null;
       const evOpen = pCur === null ? null : 1 - 2 * pCur;
 
-      // 假设局面：镜像 applyBid 的 zhai/preZhai 记账，不动真局
+      // 假设局面：镜像 applyBid 的 zhai 记账，不动真局
       const hypo = (round, b, by) => {
         const z = E.zhaiAfter(round, b);
-        let pre = round.preZhai;
-        if (!round.zhai && z) pre = round.bid || null;
-        if (round.zhai && !z) pre = null;
-        return Object.assign({}, round, { bid: Object.assign({}, b, { by, zhai: z }), zhai: z, preZhai: pre });
+        return Object.assign({}, round, { bid: Object.assign({}, b, { by, zhai: z }), zhai: z });
       };
       // 叶子：面对对手反价 b*（落在 hr1 之后）的我方静态最佳回应值
       const leafCache = new Map();
@@ -181,10 +178,7 @@ function readerHelpers(BETA, GAMMA, EPS) {
   const pOpenH = (b, h) => b ? logistic(GAMMA * (0.5 - pHat(b, h))) : 0;
   const hypo = (round, b, by) => {
     const z = E.zhaiAfter(round, b);
-    let pre = round.preZhai;
-    if (!round.zhai && z) pre = round.bid || null;
-    if (round.zhai && !z) pre = null;
-    return Object.assign({}, round, { bid: Object.assign({}, b, { by, zhai: z }), zhai: z, preZhai: pre });
+    return Object.assign({}, round, { bid: Object.assign({}, b, { by, zhai: z }), zhai: z });
   };
   // 同(点数,斋态)组内取最小个数代表：同面更高个数 P 严格更低，任何理性喊价者都先选最小个数。
   // 这是对手模型的支撑集剪枝（策略等价类），把 |合法价| 从 ~54 压到 ≤12，举证成本降两个数量级。
@@ -211,7 +205,7 @@ function readerHelpers(BETA, GAMMA, EPS) {
   // 从公开喊价序列重建对手手牌后验；每步归一化，塌缩时回落先验
   function belief(r, opp) {
     let w = HANDS.map(h => h.w);
-    let st = { rules: r.rules, bid: null, zhai: false, preZhai: null };
+    let st = { rules: r.rules, bid: null, zhai: false };
     for (const s of r.seq) {
       if (s.kind !== 'bid') break;
       const a = { type: 'bid', count: s.count, face: s.face, mode: s.mode || 'normal' };

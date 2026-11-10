@@ -80,7 +80,7 @@
     m.round = {
       no: m.roundNo, dice: { A: rollDice(rng), B: rollDice(rng) },
       turn: first, bid: null, seq: [], over: false, result: null, revealed: false,
-      rules: m.rules, zhai: false, preZhai: null,   // preZhai=斋前最高价；破斋必须严格大于它，防压价死循环
+      rules: m.rules, zhai: false,
     };
     return m.round;
   }
@@ -110,27 +110,21 @@
     if (!b) return null;
     return Math.ceil(b.count / rulesOf(round).halfDivisor);
   }
-  // 破斋门槛：个数至少要·达到当前这手的 breakMultiplier 倍（新规是「至少翻倍」，不是「正好翻倍」）。
+  // 破斋门槛：当前个数的 breakMultiplier 倍再加 breakPlus（新规是「两倍 + 1」）。
+  // 2n+1 天生大于转斋前的个数（ceil(n/2)*2+1 > n），所以不再需要「必须超过斋前那一手」这条，
+  // 也就不需要在轮内记 preZhai——一条规则同时挡住压价循环。
   function breakMinCount(round) {
-    const b = round.bid, k = rulesOf(round).breakMultiplier;
+    const b = round.bid, R = rulesOf(round), k = R.breakMultiplier;
     if (!b || !k) return null;
-    return b.count * k;
+    return b.count * k + (R.breakPlus || 0);
   }
-  // 破斋的两个条件（与是否写标记无关；写不写标记决定它「算不算」破斋）：
-  //   ① 个数 ≥ 当前个数的 breakMultiplier 倍；
-  //   ② 整手严格大于斋前那一手（个数更多，或个数相同而点数更大）——否则「转斋→破斋」能反复压价。
-  // 首喊直接斋那一轮没有斋前一手，只要个数够翻倍即可。
-  function canBreak(round, count, face) {
+  // 破斋的唯一条件：个数 ≥ 当前个数 × k + plus（新规 = 2n+1），点数任选。
+  // 写不写「破斋」决定它「算不算」破斋（不写就只是斋里的普通抬价）。
+  function canBreak(round, count) {
     const R = rulesOf(round);
     if (!R.breakMultiplier || !round.zhai || !round.bid) return false;
     const min = breakMinCount(round);
-    if (min == null || count < min || count > R.maxCount) return false;
-    if (!R.breakMustExceed) return true;
-    const pre = round.preZhai;
-    if (!pre) return true;
-    if (count > pre.count) return true;
-    if (count === pre.count) return ord(face) > ord(pre.face);
-    return false;
+    return min != null && count >= min && count <= R.maxCount;
   }
   // 某个个数下允许写「破斋」的点数；count 省略时按最低的翻倍个数算。
   // 返回 null=本桌此刻谈不上破斋；[]=这个个数破不了斋；否则为合法点数列表。
@@ -140,12 +134,7 @@
     const min = breakMinCount(round);
     if (min == null) return null;
     const c = count == null ? min : count;
-    if (c < min || c > R.maxCount) return [];
-    if (!R.breakMustExceed) return FACES.slice();
-    const pre = round.preZhai;
-    if (!pre || c > pre.count) return FACES.slice();
-    if (c === pre.count) return FACES.filter(f => ord(f) > ord(pre.face));
-    return [];
+    return (c < min || c > R.maxCount) ? [] : FACES.slice();
   }
   // 兼容旧名字：「个数至少到这个值才能破斋」（旧语义里它也是唯一的可用个数）。
   function breakCount(round) {
@@ -282,8 +271,6 @@
     a = normalizeAction(round, a);
     if (!legalActionSet(round).has(actionKey(a))) throw new Error('非法喊价 ' + a.count + '个' + a.face + (a.mode !== 'normal' ? '(' + a.mode + ')' : ''));
     const z = zhaiAfter(round, a);
-    if (!round.zhai && z) round.preZhai = round.bid || null;   // 进斋：记住斋前最高价（首喊直接斋则为 null）
-    if (round.zhai && !z) round.preZhai = null;                // 破斋：约束随之解除
     round.seq.push({ who, kind: 'bid', count: a.count, face: a.face, mode: a.mode, zhai: z, at: round.seq.length + 1 });
     round.bid = { by: who, count: a.count, face: a.face, mode: a.mode, zhai: z, at: round.seq.length };
     round.zhai = z;

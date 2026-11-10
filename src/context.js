@@ -246,8 +246,9 @@ function buildUser(m, who, opts = {}) {
       const outcome = h ? (h.winner === who
         ? (h.loserPays === false ? '该轮你赢、血量不变' : '该轮你 +' + kk + ' 点血')
         : '该轮你 −' + kk + ' 点血') : '该轮进行中';
-      const j = (e.judgment || '').slice(0, 160);
-      L.push(`  第${e.round}轮你判断：${j}${j.length >= 160 ? '…' : ''} → 你${e.action || ''} → ${outcome}。`);
+      // 逐手判断是模型自己写的读牌依据，只截断病态长度（旧值 160 字把推理砍成了结论）。
+      const j = (e.judgment || '').slice(0, 600);
+      L.push(`  第${e.round}轮你判断：${j}${j.length >= 600 ? '…' : ''} → 你${e.action || ''} → ${outcome}。`);
     }
   }
 

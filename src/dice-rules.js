@@ -124,8 +124,9 @@
       if (!R.firstFace1 && face === 1) return '首喊不能喊 1。';
       return legal.has(E.actionKey(norm)) ? null : '这一手不是本桌的合法首喊。';
     }
-    if (E.repeatedBid(r, count, face))
-      return '本轮已经喊过「' + count + ' 个 ' + face + '」，同一手不能重复喊（个数和点数都一样就算重复；转斋取半后绕回老价位也不行），换个个数或点数。';
+    if (E.repeatedBid(r, count, face, E.zhaiAfter(r, norm)))
+      return '本轮已经喊过「' + count + ' 个 ' + face + (E.zhaiAfter(r, norm) ? '（斋中）' : '') + '」，同一手不能重复喊'
+        + '（个数、点数、斋状态都一样才算同一手；转斋取半绕回老价位也不行），换个个数或点数。';
     if (R.zhaiMode === 'face1' && p.face === 1 && !(count > p.count && face === 1))
       return '上一手喊的是 1（斋），之后只能继续加 1 的个数。';
     if (legal.has(E.actionKey(norm))) return null;

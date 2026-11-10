@@ -67,6 +67,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
     timeoutMs = 300000, connRetries = 4, maxAsks = 3,
     context = 'chat', prompt = null, rules = 'classic',
     reflectTokens = 16384, reflectEffort = 'high',   // 连败深度反思的写作/思考预算
+    summaryTokens = 8192,                            // 轮末复盘的输出预算（复盘是跨轮资产，不要按小预算给）
   } = cfg;
   const RS = require('./dice-rulesets.js');
   const RULE = RS.normalize(rules);
@@ -254,7 +255,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
     for (let ask = 1; ask <= maxAsks; ask++) {
       callKey = { ...callKey, ask };        // 每次重写都是独立一步，落盘主键带 ask
       let out;
-      try { out = await callMessages(work, 'summary'); }
+      try { out = await callMessages(work, 'summary', { maxTokens: summaryTokens }); }
       catch (e) { break; }   // 总结连接失败不致命：本轮少一条笔记，下一轮照常（不影响比分归因）
       const echo = C.isPromptEcho(out.content, summaryPrompt);
       const text = cleanNote(out.content);

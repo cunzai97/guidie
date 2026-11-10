@@ -280,7 +280,7 @@ const ctxt = RS.rulesText(CUSTOM);
 ok(ctxt.includes('ceil(n / 3)') && !ctxt.includes('翻倍破斋') && !ctxt.includes('「劈」'), '规则文本按参数生成');
 // 2026-11-10 计分改为血量制（输家掉血、归零判负），指纹并入 |hp=1：积分制时代的旧 run 与现在不可比。
 ok(RS.hash(CUSTOM) !== RS.hash(FX) && RS.hash('classic') === '413e1d1d', '自定义套指纹独立、经典套指纹随血量制版本锁定');
-ok(RS.hash(FX) === 'a6e4a59c', 'flex 指纹锁定（破斋＝两倍加一 + 必须写标记 + 个数≥2 + 血量制 + 合法集修正 sv2 + 不许重复喊 nr + 喊 1 即斋，与更早的 flex 数据不可比）');
+ok(RS.hash(FX) === '74b81c55', 'flex 指纹锁定（破斋＝两倍加一 + 必须写标记 + 个数≥2 + 血量制 + 合法集修正 sv2 + 不许重复喊 nr + 喊 1 即斋，与更早的 flex 数据不可比）');
 console.log('  [9] 自定义规则套参数贯通引擎 / 文本 / 指纹');
 
 // ---- 10. 单局 flex 随机对局（跑到血量归零），覆盖转斋、破斋、劈 ----

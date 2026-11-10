@@ -87,14 +87,15 @@
 
   const other = w => (w === 'A' ? 'B' : 'A');
 
-  /* 本轮是否已经喊过「X 个 Y」（个数与点数都一样就算同一手）。
-   * 为什么需要：转斋把个数砍半，价格于是能绕回本轮已经喊过的位置——
-   * 例如「4 个 6」转斋又落回「2 个 1」，而 2 个 1 早在前几手喊过，等于同一个承诺喊了两遍、
-   * 且把最高价整体拉低。所以任何喊价（普通 / 转斋 / 破斋）都不许重复本轮已有的同一手。
+  /* 本轮是否已经喊过同一手。判重的键是「个数 + 点数 + 斋状态」三样：
+   * 未斋的「3 个 6」和斋里的「3 个 6」是两个不同的承诺（后者只数真实 6），不算重复；
+   * 而「个数、点数、斋」全同的一手重喊一遍，就是把同一个承诺说了两遍——
+   * 转斋取半会把个数砍回去，正是靠这条挡住「价格绕回老位置」。
    */
-  function repeatedBid(round, count, face) {
+  function repeatedBid(round, count, face, zhai) {
     for (const s of (round && round.seq) || []) {
-      if (s.kind === 'bid' && s.count === count && s.face === face) return true;
+      if (s.kind !== 'bid' || s.count !== count || s.face !== face) continue;
+      if (zhai == null || !!s.zhai === !!zhai) return true;
     }
     return false;
   }
@@ -183,7 +184,7 @@
   function legalActions(round) {
     const R = rulesOf(round), out = [], seen = new Set();
     const add = a => {
-      if (a.type === 'bid' && repeatedBid(round, a.count, a.face)) return;   // 本轮喊过的同一手不再给
+      if (a.type === 'bid' && repeatedBid(round, a.count, a.face, zhaiAfter(round, a))) return;   // 同一手不再给
       const k = actionKey(a); if (!seen.has(k)) { seen.add(k); out.push(a); }
     };
     const b = round.bid;

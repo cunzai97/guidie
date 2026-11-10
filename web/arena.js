@@ -1108,8 +1108,9 @@ function cleanSum(t){
   let s = String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
   const i = s.indexOf('\n\n');
   if (i > 0) { const a = s.slice(0,i).trim(), b = s.slice(i+2).trim(); if (a && a === b) s = a; }
-  // 只做工程护栏：400 字复盘远够用，留三倍余量，避免把超长笔记整段灌回上下文。
-  return s.slice(0, 1200);
+  // 只做工程护栏（防病态输出把上下文撑爆），不是写作预算：复盘由模型自己决定篇幅。
+  // 旧值 1200 字会把正常分量的复盘直接砍掉——复盘是它跨轮的读牌资产，砍掉等于废掉记忆。
+  return s.slice(0, 8000);
 }
 
 /* ---------------- 局内上下文：全量保留，整局结束即清空 ----------------

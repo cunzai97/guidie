@@ -16,19 +16,19 @@ function minBid(round) {
 let pass = 0, fail = 0;
 function ok(c, m) { if (c) { pass++; console.log('  ✓', m); } else { fail++; console.log('  ✗', m); } }
 
-console.log('[1] 反思是拼接不是替代：基础提示词（规则 + 这局怎么赢 + 一句话）必须还在');
+console.log('[1] 反思是拼接不是替代：基础提示词（规则 + 赢的秘诀）必须还在');
 {
   const base = C.buildSystem(10, { rules: RS.normalize('flex') });
   const refl = C.buildSystem(10, { rules: RS.normalize('flex'),
     reflection: { streak: 5, text: '以后遇到 3个6斋 先看对手历史，不急着劈。' } });
-  ok(base.includes('【这局怎么赢】'), '基线含「这局怎么赢」');
-  ok(base.includes('伪装自己，了解别人'), '基线含收尾的一句话');
-  ok(refl.includes('【这局怎么赢】'), '反思臂仍有「这局怎么赢」（不被替代）');
-  ok(refl.includes('伪装自己，了解别人'), '反思臂仍有那句话');
+  ok(base.includes('【赢的秘诀】'), '基线含「赢的秘诀」');
+  ok(base.includes('谁的暴露少、读到的多，谁赢'), '基线含结尾那句');
+  ok(refl.includes('【赢的秘诀】'), '反思臂仍有「赢的秘诀」（不被替代）');
+  ok(refl.includes('谁的暴露少、读到的多，谁赢'), '反思臂仍有结尾那句');
   ok(refl.includes('连输 5 轮'), '反思臂含连败提示');
   ok(refl.includes('不急着劈'), '反思全文注入');
   ok(refl.includes('喊价「n 个 m」'), '规则仍在（不然没法打）');
-  ok(refl.indexOf('【连败后的自省】') > refl.indexOf('【一句话】'), '反思拼在「一句话」之后');
+  ok(refl.indexOf('【连败后的自省】') > refl.indexOf('【赢的秘诀】'), '反思拼在「赢的秘诀」之后');
   ok(!base.includes('【连败后的自省】'), '没触发反思时不会出现这一段');
 }
 

@@ -44,21 +44,16 @@ const FRAME_PLAIN = '你在和对手一对一打大话骰。';
 
 // 这局怎么赢：只说规则里没有的东西——胜率由哪几条差距决定、什么打法会被读掉。
 // 不写具体招法（该喊什么、什么时候劈），留给模型自己从对手身上长出来。
-const HOWTO_PLAIN = `【这局怎么赢】
+const HOWTO_PLAIN = `【赢的秘诀】
 
-1. 概率是入场券
-双方都会算，算得准不构成优势。
+这局不是比谁算得准，是比谁读得准。
 
-2. 进攻
-对手的每一手价都在暴露它：手里有多少该点数、哪个价位有货、从哪一手开始骗。加价幅度、转斋时机、开盅时机也是情报。
+你喊的每一手都在暴露你的牌，对手喊的每一手也在暴露它的牌——喊多高、什么时候转斋、什么时候开盅，都是。
 
-3. 防守
-你的每一手同样在被反推。任何能总结成规律的习惯，都是免费情报：有货才喊最贵，固定比例的诈唬也是规律，只在没货时开盅等于自报没货。防守要花钱，通常就是放弃这一手的最优。`;
+骰子每轮重摇，人不会：每轮亮牌，它这一轮每一手当时是真是假，轮末你都能看得见。
 
-// 收尾一句：把整套说明压成一句话交给模型（对手同样知道这句）
-const MAXIM_PLAIN = '伪装自己，了解别人。';
-const SUMMARY_PLAIN = `【一句话】
-${MAXIM_PLAIN}对手也知道这一句。`;
+谁的暴露少、读到的多，谁赢。对手也知道这一条。`;
+
 const CUE_PLAIN = '轮到你。';
 const FORMAT_PLAIN = `输出格式：先写想法（可长可短），最后一行只写行动：「喊 X 个 Y」／「喊 X 个 Y 斋」／「喊 X 个 Y 破斋」（破斋必须写出这两个字）／「开盅」／「劈」。不符合规则会要求重写。`;
 const FORMAT_PLAIN_CLASSIC = `输出格式：先写想法（可长可短），最后一行只写行动：「喊 X 个 Y」／「开盅」。`;
@@ -72,7 +67,7 @@ const ARMS = {
   plain: {
     label: '这局怎么赢',
     frame: FRAME_PLAIN,
-    guide: HOWTO_PLAIN + '\n\n' + SUMMARY_PLAIN,
+    guide: HOWTO_PLAIN,
     format: FORMAT_PLAIN,
     formatClassic: FORMAT_PLAIN_CLASSIC,
     cue: CUE_PLAIN,
@@ -231,7 +226,7 @@ function buildUser(m, who, opts = {}) {
   const past = tail(m.history, histLimit, 10);
   if (past.length) {
     L.push('');
-    L.push('前几轮的真实结果（亮牌后的事实，可用来读对手习惯）：');
+    L.push('前几轮的真实结果（亮牌后的事实）：');
     for (const h of past) {
       if (h.forfeit) { L.push(`  第${h.no}轮：${me(h.loser)} 未能给出合法行动，判负 → ${payClause(h, me, R)}。`); continue; }
       L.push('  第' + h.no + '轮：' + resultTail(h, me, R));
@@ -404,7 +399,7 @@ const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, memoryMarke
   legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts,
   extractJudgment, parseAction, checkLegal, isPromptEcho, ACTION_LINE_RE: RUL.ACTION_LINE_RE,
   RULES_TPL,
-  FRAME_PLAIN, HOWTO_PLAIN, SUMMARY_PLAIN, FORMAT_PLAIN, FORMAT_PLAIN_CLASSIC, SUMMARY_INSTRUCTION_PLAIN, CUE_PLAIN, MAXIM_PLAIN,
+  FRAME_PLAIN, HOWTO_PLAIN, FORMAT_PLAIN, FORMAT_PLAIN_CLASSIC, SUMMARY_INSTRUCTION_PLAIN, CUE_PLAIN,
   ARMS, ARM_DEFAULT, armOf };
 if (NODE) module.exports = API;
 else root.DiceContext = API;

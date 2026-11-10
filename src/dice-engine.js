@@ -87,19 +87,6 @@
 
   const other = w => (w === 'A' ? 'B' : 'A');
 
-  /* 本轮是否已经喊过同一手。判重的键是「个数 + 点数 + 斋状态」三样：
-   * 未斋的「3 个 6」和斋里的「3 个 6」是两个不同的承诺（后者只数真实 6），不算重复；
-   * 而「个数、点数、斋」全同的一手重喊一遍，就是把同一个承诺说了两遍——
-   * 转斋取半会把个数砍回去，正是靠这条挡住「价格绕回老位置」。
-   */
-  function repeatedBid(round, count, face, zhai) {
-    for (const s of (round && round.seq) || []) {
-      if (s.kind !== 'bid' || s.count !== count || s.face !== face) continue;
-      if (zhai == null || !!s.zhai === !!zhai) return true;
-    }
-    return false;
-  }
-
   /* ---------- 动作模型 ----------
    * bid: {type:'bid', count, face, mode}
    *   mode: 'normal' | 'toZhai'（转斋） | 'breakZhai'（破斋） | undefined（交给局面自动推断）
@@ -184,7 +171,6 @@
   function legalActions(round) {
     const R = rulesOf(round), out = [], seen = new Set();
     const add = a => {
-      if (a.type === 'bid' && repeatedBid(round, a.count, a.face, zhaiAfter(round, a))) return;   // 同一手不再给
       const k = actionKey(a); if (!seen.has(k)) { seen.add(k); out.push(a); }
     };
     const b = round.bid;
@@ -330,7 +316,7 @@
     };
   }
 
-  return { FACES, FACE_ORDER, ord, repeatedBid, rollDice, countFace, countOf, probBidTrue, newMatch, settle, startRound,
+  return { FACES, FACE_ORDER, ord, rollDice, countFace, countOf, probBidTrue, newMatch, settle, startRound,
            other, legalCounts, legalFaces, legalActions, legalActionSet, normalizeAction, actionKey,
            zhaiCount, breakCount, breakMinCount, canBreak, breakFaces, zhaiAfter, canBid, applyBid, resolveOpen, roundLine, mulberry32,
            rulesOf, RS };

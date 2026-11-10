@@ -4,6 +4,7 @@
    /a/...   -> http://127.0.0.1:1235/...    /b/... -> 1236（旧版固定端口）
    /wb/...  -> 本地 OpenAI 兼容网关（默认 127.0.0.1:8791，可用 DICE_WB_BASE 覆盖）
    /api/presets  GET/PUT -> presets.json（模型预设与全局设置，跨浏览器保留）
+   /api/matches  GET/POST -> runs/matches.jsonl（每局一条战绩，排名用；只走 API）
    其余路径按静态文件从本目录提供（页面在 web/arena.html，共享模块在 src/）。
    presets.json 与 runs/ 不允许静态直出：前者含本机端点与密钥，只走 /api/presets。
    请求体带 "stream": true 时按 text/event-stream 边收边发，模型的思考过程实时可见；
@@ -19,6 +20,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS_DIR = os.path.join(ROOT, 'runs')        # 实验产物：调用流水 / 服务日志（gitignore）
 os.makedirs(RUNS_DIR, exist_ok=True)
 CALL_LOG = os.path.join(RUNS_DIR, 'calls.jsonl')   # 每次模型调用都落盘，便于复盘
+MATCH_LOG = os.path.join(RUNS_DIR, 'matches.jsonl')  # 每局一条战绩（双方/指纹/胜负/过程指标），排名用
 PRESETS_FILE = os.path.join(ROOT, 'presets.json')
 PORTS = {'a': 1235, 'b': 1236}
 WB_BASE = os.environ.get('DICE_WB_BASE', 'http://127.0.0.1:8791')   # 本地 OpenAI 兼容网关
@@ -87,6 +89,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _is_local_api(self):
         return urllib.parse.urlsplit(self.path).path == '/api/presets'
 
+    def _is_matches_api(self):
+        return urllib.parse.urlsplit(self.path).path == '/api/matches'
+
     # 静态直出禁区：presets.json 含本机端点与 API Key（只走 /api/presets），
     # runs/ 是实验流水，隐藏文件（.git 等）一律不暴露。
     def _static_blocked(self):
@@ -117,6 +122,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             with open(tmp, 'w', encoding='utf-8') as f:
                 f.write(payload)
             os.replace(tmp, PRESETS_FILE)
+            return self._send_buffered(200, 'application/json; charset=utf-8', b'{"ok":true}', method)
+        except Exception as e:
+            return self._send_buffered(400, 'application/json',
+                                       json.dumps({'error': str(e)}, ensure_ascii=False).encode('utf-8'), method)
+
+    # ---------- 对局战绩：GET 全量读取 / POST 追加一局（runs/matches.jsonl） ----------
+    def _serve_matches(self, method):
+        if method == 'GET':
+            matches = []
+            try:
+                with open(MATCH_LOG, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            matches.append(json.loads(line))
+                        except ValueError:
+                            pass
+            except FileNotFoundError:
+                pass
+            return self._send_buffered(200, 'application/json; charset=utf-8',
+                                       json.dumps({'matches': matches}, ensure_ascii=False).encode('utf-8'), method)
+        n = int(self.headers.get('Content-Length') or 0)
+        if not n or n > 64 * 1024:
+            return self._send_buffered(400, 'application/json', b'{"error":"bad body size"}', method)
+        try:
+            obj = json.loads(self.rfile.read(n).decode('utf-8'))
+            if not isinstance(obj, dict) or not isinstance(obj.get('seats'), dict):
+                raise ValueError('seats required')
+            if not all(k in obj['seats'] for k in ('A', 'B')) or not isinstance(obj.get('points'), dict):
+                raise ValueError('seats.A/B and points required')
+            if not obj.get('ruleset_hash') or not obj.get('prompt_hash'):
+                raise ValueError('fingerprints required')
+            with open(MATCH_LOG, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(obj, ensure_ascii=False) + '\n')
             return self._send_buffered(200, 'application/json; charset=utf-8', b'{"ok":true}', method)
         except Exception as e:
             return self._send_buffered(400, 'application/json',
@@ -272,6 +313,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         buf = b''
         sent_done = False
+        grace = 0
         try:
             while True:
                 chunk = up.read1(8192)
@@ -284,8 +326,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         sent_done = True
                     scan(line)
                 self._chunk(chunk)
-                if acc['done'] or acc['finish']:
+                # llama-server 把 usage 放在 finish 之后单独一帧，见 finish 就断会把 token 数吞掉；
+                # 等到 [DONE]、或 finish 且已拿到 usage，再给几块宽限后收尾。
+                if acc['done']:
                     break
+                if acc['finish'] and acc['comp'] is not None:
+                    break
+                if acc['finish']:
+                    grace += 1
+                    if grace > 4:
+                        break
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
@@ -313,6 +363,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self._is_local_api(): return self._serve_presets('GET')
+        if self._is_matches_api(): return self._serve_matches('GET')
         if self._is_api(): return self._proxy('GET')
         if self._static_blocked(): return self.send_error(404)
         super().do_GET()
@@ -323,6 +374,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def do_POST(self):
+        if self._is_matches_api(): return self._serve_matches('POST')
         self._proxy('POST') if self._is_api() else self.send_error(405)
 
     def do_PUT(self):

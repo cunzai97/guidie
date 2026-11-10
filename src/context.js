@@ -149,18 +149,7 @@ const SUMMARY_INSTRUCTION_PROBE = `本轮的全部信息已在上面摊开。写
 只把那句老话再留给你：${MAXIM}
 如果想找点落点，也可以顺手想想：这一轮你对对手的读牌，哪些还站得住、哪些该翻了；这套打法是不是已经被它摸清。想不想、想多深都随你。
 
-篇幅不必长，400 字以内够用。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束时才把这一切收成一段摘要带到下一局，所以你认为重要的东西要自己写进这段总结里。`;
-
-const MATCH_SUMMARY_INSTRUCTION_PROBE = `这一整局打完了。上面摊开的是本局从头到尾的全部记录：每一轮你写下的复盘、每一手的判断与落子、每次亮牌后的事实，还有上一局留给你的那段摘要。
-
-写一段带到下一局的复盘吧；写什么、按什么顺序写、要不要改打法，都由你自己决定，这里不设必须回答的条目，也不检查你写了哪几条。
-
-只把那句老话再留给你：${MAXIM}
-如果想找点落点，也可以顺手想想：这一局你对对手的读牌，哪些最后站住了、哪些该翻了；这套打法是不是已经被它摸清。想不想、想多深都随你。
-
-篇幅不必长，400 字以内够用。下一局开始时，本局这些逐手的记录就不再单独保留了，只会把你这一段带过去；所以你认为重要的东西要自己写进来。`;
-
-const MATCH_SUMMARY_INSTRUCTION = `这一整局打完了。上面摊开的是本局从头到尾的全部记录：每一轮你写下的复盘、每一手的判断与落子、每次亮牌后的事实，还有上一局留给你的那段摘要。请你自己写一段带到下一局的复盘总结：要总结什么、怎么反思、觉得哪些对后面有用，都由你自己决定，我不预设方向。篇幅不必长，400 字以内够用。下一局开始时，本局这些逐手的记录就不再单独保留了，只会把你这一段带过去，所以你认为重要的东西要自己写进来。`;
+篇幅不必长，400 字以内够用。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束后这一切全部清空，不会带到下一局。`;
 
 const CUE_PROBE = '现在轮到你：给出这一手的决断。';
 
@@ -187,13 +176,19 @@ function seqTag(s, R) {
   if (s.mode === 'breakZhai') return '（破斋）';
   return s.zhai ? '（斋）' : '';
 }
-// 结算行的积分与动作：经典套逐字复现旧文本；新套按这一轮实际的 stake / 劈渲染。
+// 结算积分的单句渲染：开盅可能只给赢家加分（openLoserLoses=false），劈与经典套双向。
+// 输家不扣分时也要点名输家是谁，否则「够→开盅方输」的因果反馈会被读丢。
+function payClause(h, me, R) {
+  const k = h.stake || R.stake;
+  return h.loserPays === false
+    ? `${me(h.winner)} +${k}，输家（${me(h.loser)}）不扣分`
+    : `${me(h.winner)} +${k} / ${me(h.loser)} −${k}`;
+}
 function resultTail(h, me, R) {
   if (R.zhaiMode === 'face1') return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}，${me(h.opener)}开盅，全场${h.bid.face}实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${me(h.winner)} +1 / ${me(h.loser)} −1。`;
   const act = h.slash ? '劈' : '开盅', k = h.stake || R.stake;
   const z = h.bid && h.bid.zhai ? '（斋）' : '';
-  const tail = h.loserPays === false ? `${me(h.winner)} +${k}，输家不扣分。` : `${me(h.winner)} +${k} / ${me(h.loser)} −${k}。`;
-  return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}${z}，${me(h.opener)}${act}，全场实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${tail}`;
+  return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}${z}，${me(h.opener)}${act}，全场实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${payClause(h, me, R)}。`;
 }
 
 // 合法动作边界：经典套完全复刻旧菜单（逐字），新套按规则集列出转斋/破斋/劈。
@@ -310,7 +305,7 @@ function buildUser(m, who, opts = {}) {
     L.push('');
     L.push('前几轮的真实结果（亮牌后的事实，可用来读对手习惯）：');
     for (const h of past) {
-      if (h.forfeit) { L.push(`  第${h.no}轮：${me(h.loser)} 未能给出合法行动，判负 → ${me(h.winner)} +1 / ${me(h.loser)} −1。`); continue; }
+      if (h.forfeit) { L.push(`  第${h.no}轮：${me(h.loser)} 未能给出合法行动，判负 → ${payClause(h, me, R)}。`); continue; }
       L.push('  第' + h.no + '轮：' + resultTail(h, me, R));
       if (h.dice) L.push(`    亮牌：你 [${h.dice[who].join(' ')}]，对手 [${h.dice[opp].join(' ')}]（该轮双方真实手牌）。`);
     }
@@ -324,7 +319,9 @@ function buildUser(m, who, opts = {}) {
       : '你自己最近的判断与结果（回顾你之前的读牌是否成立，据此调整）：');
     for (const e of memo) {
       const h = m.history.find(x => x.no === e.round);
-      const outcome = h ? (h.winner === who ? '该轮你 +1' : '该轮你 −1') : '该轮进行中';
+      const kk = h ? (h.stake || R.stake) : 1;
+      const outcome = h ? (h.winner === who ? '该轮你 +' + kk
+        : (h.loserPays === false ? '该轮你输、未扣分' : '该轮你 −' + kk)) : '该轮进行中';
       const j = (e.judgment || '').slice(0, 160);
       L.push(`  第${e.round}轮你判断：${j}${j.length >= 160 ? '…' : ''} → 你${e.action || ''} → ${outcome}。`);
     }
@@ -366,7 +363,7 @@ function buildTurn(m, who, cursor, opts = {}) {
       if (resolved.length) {
         L.push('—— 结算结果（亮牌后的事实）——');
         for (const h of resolved) {
-          if (h.forfeit) { L.push(`  第${h.no}轮：${me(h.loser)} 未能给出合法行动，判负 → ${me(h.winner)} +1 / ${me(h.loser)} −1。`); continue; }
+          if (h.forfeit) { L.push(`  第${h.no}轮：${me(h.loser)} 未能给出合法行动，判负 → ${payClause(h, me, R)}。`); continue; }
           L.push('  第' + h.no + '轮：' + resultTail(h, me, R));
           if (h.dice) L.push(`    亮牌：你 [${h.dice[who].join(' ')}]，对手 [${h.dice[opp].join(' ')}]（该轮双方真实手牌）。`);
         }
@@ -413,7 +410,7 @@ function buildTurn(m, who, cursor, opts = {}) {
   return { text: L.join('\n'), next };
 }
 
-const SUMMARY_INSTRUCTION = `本轮的全部信息已在上面摊开。请你自己写一段复盘总结，带到后续回合：要总结什么、怎么反思、觉得哪些对后面有用，都由你自己决定，我不预设方向。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束时才把这一切收成一段摘要带到下一局，所以你认为重要的东西要自己写进这段总结里。`;
+const SUMMARY_INSTRUCTION = `本轮的全部信息已在上面摊开。请你自己写一段复盘总结，带到后续回合：要总结什么、怎么反思、觉得哪些对后面有用，都由你自己决定，我不预设方向。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束后这一切全部清空，不会带到下一局。`;
 
 function buildSummaryPrompt(m, who, result, opts = {}) {
   const R = rulesOf(opts.rules || m.rules);
@@ -437,10 +434,7 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
   }
   if (result && result.forfeit) {
     L.push('');
-    const fk = result.stake || 1;
-    L.push(`结算：${me(result.loser)} 未能给出合法行动判负 → ${me(result.winner)} +${fk}`
-      + (result.loserPays === false ? '，输家不扣分' : ` / ${me(result.loser)} −${fk}`)
-      + `。本轮${result.winner === who ? '你赢' : '你输'}。`);
+    L.push(`结算：${me(result.loser)} 未能给出合法行动判负 → ${payClause(result, me, R)}。本轮${result.winner === who ? '你赢' : '你输'}。`);
   } else if (result && result.bid) {
     L.push('');
     if (R.zhaiMode === 'face1') {
@@ -450,26 +444,12 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
     } else {
       const k = result.stake || R.stake;
       const wildNote = !result.zhai && result.bid.face !== 1 && result.wild ? `（其中 ${result.wild} 个来自万能1）` : '';
-      const pay = result.loserPays === false ? `${me(result.winner)} +${k}，输家不扣分。` : `${me(result.winner)} +${k} / ${me(result.loser)} −${k}。`;
+      const pay = payClause(result, me, R) + '。';
       L.push(`结算：${me(result.bid.by)}喊 ${result.bid.count}个${result.bid.face}${seqTag(result.bid, R)}，${me(result.opener)}${result.slash ? '劈' : '开盅'}，全场${result.bid.face}实际有 ${result.actual} 个${wildNote}（${result.truth ? '够' : '不够'}）→ ${pay}本轮${result.winner === who ? '你赢' : '你输'}。`);
     }
   }
   L.push('');
   L.push(opts.variant === 'probe' ? SUMMARY_INSTRUCTION_PROBE : SUMMARY_INSTRUCTION);
-  return L.join('\n');
-}
-
-function buildMatchSummaryPrompt(m, who, opts = {}) {
-  const opp = E.other(who);
-  const me = x => (x === who ? '你' : '对手');
-  const fmt = x => (x > 0 ? '+' + x : String(x));
-  const L = ['整局结束。'];
-  const rounds = (m.history || []).length;
-  L.push(`本局共 ${rounds} 轮，最终积分：你 ${fmt(m.points[who])}，${me(opp)} ${fmt(m.points[opp])}（先到 +${m.roundTarget} 分者胜）。`);
-  if (m.winner) L.push(m.winner === who ? '这一局是你赢下了。' : '这一局是对手赢下了。');
-  else L.push('这一局按积分判为平局。');
-  L.push('');
-  L.push(opts.variant === 'probe' ? MATCH_SUMMARY_INSTRUCTION_PROBE : MATCH_SUMMARY_INSTRUCTION);
   return L.join('\n');
 }
 
@@ -482,17 +462,17 @@ const RUL = NODE ? require('./dice-rules.js') : root.DiceRules;
 const { parseAction, checkLegal, isPromptEcho, extractJudgment } = RUL;
 
 // 各臂写进 system / 复盘提示的固定文本，供 runlog.promptHash 按臂取指纹。
-// 经典套的数组逐字保持旧版（历史 run 的指纹仍可对照）；规则集变化时由 promptTexts 生成新数组。
+// 经典套返回固定数组，保证同一版本文本的 prompt_hash 稳定；规则集变化时由 promptTexts 生成新数组。
 const PROMPT_TEXTS = {
-  classic: [RULES_TPL, FRAME, COACH, PLAY_REFERENCE, FORMAT, SUMMARY_INSTRUCTION, MATCH_SUMMARY_INSTRUCTION],
-  probe: [RULES_TPL, FRAME_PROBE, GUIDE_PROBE, FORMAT_PROBE, SUMMARY_INSTRUCTION_PROBE, MATCH_SUMMARY_INSTRUCTION_PROBE],
+  classic: [RULES_TPL, FRAME, COACH, PLAY_REFERENCE, FORMAT, SUMMARY_INSTRUCTION],
+  probe: [RULES_TPL, FRAME_PROBE, GUIDE_PROBE, FORMAT_PROBE, SUMMARY_INSTRUCTION_PROBE],
 };
 
-// 指纹用：按 (臂, 规则集) 取完整文本数组。经典套返回原数组，保证 prompt_hash 不变。
+// 指纹用：按 (臂, 规则集) 取完整文本数组。内置 classic 直接复用上面的固定数组。
 function promptTexts(variant, rules) {
   const R = rulesOf(rules);
   const base = PROMPT_TEXTS[variant] || PROMPT_TEXTS.classic;
-  // 只有内置 classic 才复用逐字旧文本；自定义套（哪怕同为 face1）也必须按自己的参数取指纹。
+  // 只有内置 classic 才复用固定文本；自定义套（哪怕同为 face1）也必须按自己的参数取指纹。
   if (R.builtin && R.id === 'classic') return base;
   const isProbe = variant === 'probe';
   return [
@@ -501,17 +481,16 @@ function promptTexts(variant, rules) {
     isProbe ? GUIDE_PROBE : (variant === 'classic' ? COACH + '\n\0\n' + PLAY_REFERENCE_FLEX : PLAY_REFERENCE_FLEX),
     isProbe ? FORMAT_FLEX_PROBE : FORMAT_FLEX,
     isProbe ? SUMMARY_INSTRUCTION_PROBE : SUMMARY_INSTRUCTION,
-    isProbe ? MATCH_SUMMARY_INSTRUCTION_PROBE : MATCH_SUMMARY_INSTRUCTION,
   ];
 }
 
-const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, buildMatchSummaryPrompt, memoryMarker,
+const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, memoryMarker,
   legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts,
   extractJudgment, parseAction, checkLegal, isPromptEcho, ACTION_LINE_RE: RUL.ACTION_LINE_RE,
   PROMPT_TEXTS, RULES_TPL, FRAME, COACH, PLAY_REFERENCE, PLAY_REFERENCE_FLEX, FORMAT,
-  FORMAT_FLEX, FORMAT_FLEX_PROBE, SUMMARY_INSTRUCTION, MATCH_SUMMARY_INSTRUCTION,
+  FORMAT_FLEX, FORMAT_FLEX_PROBE, SUMMARY_INSTRUCTION,
   FRAME_PROBE, GUIDE_PROBE, FORMAT_PROBE, SUMMARY_INSTRUCTION_PROBE,
-  MATCH_SUMMARY_INSTRUCTION_PROBE, CUE_PROBE, MAXIM };
+  CUE_PROBE, MAXIM };
 if (NODE) module.exports = API;
 else root.DiceContext = API;
 })(typeof self !== 'undefined' ? self : globalThis);

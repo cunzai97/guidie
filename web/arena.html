@@ -165,6 +165,7 @@
       <button class="tab" id="tabDec" data-tab="dec">决策明细 <i id="decCount">0</i></button>
       <button class="tab" id="tabMemo" data-tab="memo">轮末复盘 <i id="memoCount">0</i></button>
       <button class="tab" id="tabStats" data-tab="stats">对局统计</button>
+      <button class="tab" id="tabRank" data-tab="rank">模型排名</button>
       <div class="tabs-right"><span id="consoleMeta">准备就绪</span></div>
     </div>
     <div class="panels">
@@ -172,6 +173,7 @@
       <div class="panel" id="panelDec"></div>
       <div class="panel" id="panelMemo"></div>
       <div class="panel" id="panelStats"></div>
+      <div class="panel" id="panelRank"></div>
     </div>
   </section>
 
@@ -300,8 +302,7 @@
       <div class="sec-head"><h3>对局高级</h3></div>
       <div class="form compact">
         <label class="check"><input id="sCoach" type="checkbox"><span>附加「桌上经验」教练文本 <i>仅经典兵书臂生效 · 会喂策略结论，自主博弈臂已忽略</i></span></label>
-        <label class="check"><input id="sSummary" type="checkbox" checked><span>每轮结束让双方各写一段复盘 <i>局内全量保留；整局结束再写一段整局复盘</i></span></label>
-        <label class="check"><input id="sCarry" type="checkbox" checked><span>下一局继承上一局的整局复盘摘要 <i>按模型+提示臂隔离；上一局逐手分析会丢弃</i></span></label>
+        <label class="check"><input id="sSummary" type="checkbox" checked><span>每轮结束让双方各写一段复盘 <i>复盘带到本局后续回合；整局结束即清空，不带入下一局</i></span></label>
         <label class="check"><input id="sGod" type="checkbox"><span>默认开启上帝视角 <i>观战者可见暗骰</i></span></label>
         <label class="check"><input id="sStrict" type="checkbox" checked><span>三次无合法动作判负 <i>关闭则按最小合法加价接手</i></span></label>
         <div class="field-row">
@@ -324,7 +325,7 @@
     <div class="sec">
       <div class="sec-head"><h3>存储与服务</h3></div>
       <div class="storage" id="storageInfo">正在读取…</div>
-      <div class="sec-btns"><button class="mini" id="btnRestore">恢复内置预设</button><button class="mini" id="btnSync">重新读取服务端</button><button class="mini" id="btnClearMemory">清空跨局复盘摘要</button></div>
+      <div class="sec-btns"><button class="mini" id="btnRestore">恢复内置预设</button><button class="mini" id="btnSync">重新读取服务端</button></div>
     </div>
 
   </div>
@@ -341,6 +342,7 @@
 <script src="../src/dice-engine.js"></script>
 <script src="../src/dice-rules.js"></script>
 <script src="../src/context.js"></script>
+<script src="ranking.js"></script>
 <script src="arena.js"></script>
 </body>
 </html>

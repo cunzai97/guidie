@@ -143,9 +143,16 @@ function seatLabel(w){ return w === 'A' ? '甲方' : '乙方'; }
 function actText(a){
   if (!a) return '—';
   if (a.type === 'open') return a.slash ? '劈（开盅 · 双向结算）' : '开盅';
-  const tag = a.mode === 'toZhai' ? '（转斋）' : a.mode === 'breakZhai' ? '（破斋）'
-    : (a.face === 1 ? '（斋）' : '');
-  return '喊 ' + a.count + ' 个 ' + a.face + tag;
+  return '喊 ' + a.count + ' 个 ' + a.face + bidTag(a, activeRules());
+}
+// 喊价的斋标签：按「这一手之后是否处于斋」判定。经典套喊 1 即斋；
+// 新规里喊 1 只是普通点数，绝不能因为点数是 1 就标成「斋」——那会让 未斋→转斋 看起来像斋内转斋。
+function bidTag(a, R){
+  if (!a || a.type === 'open') return '';
+  if (a.mode === 'toZhai') return '（转斋）';
+  if (a.mode === 'breakZhai') return '（破斋）';
+  if (R && R.zhaiMode === 'face1') return a.face === 1 ? '（斋）' : '';
+  return a.zhai ? '（斋）' : '';
 }
 // 重写 / 截断续写提示里的行动词汇表：按当前规则集生成，不把新套的动作喂给经典套的模型。
 function actionHint(rules, hasBid){
@@ -603,7 +610,7 @@ function renderSeq(r){
     c.className = 'seq-chip ' + (s.kind === 'bid' ? (s.who === 'A' ? 'a' : 'b') : 'open') + (s.at === lastAt ? ' last' : '');
     if (s.kind === 'bid') {
       const tag = s.mode === 'toZhai' ? '转斋' : s.mode === 'breakZhai' ? '破斋'
-        : (s.face === 1 || s.zhai ? '斋' : '');
+        : (activeRules().zhaiMode === 'face1' ? (s.face === 1 ? '斋' : '') : (s.zhai ? '斋' : ''));
       c.textContent = s.at + '. ' + s.count + '个' + s.face + (tag ? ' · ' + tag : '');
       if (tag) c.classList.add('zhai');
     } else {
@@ -637,7 +644,7 @@ function render(){
   }
   else {
     const zt = r.bid.mode === 'toZhai' ? '<small>转斋</small>' : r.bid.mode === 'breakZhai' ? '<small>破斋</small>'
-      : ((r.bid.face === 1 || r.bid.zhai) ? '<small>斋</small>' : '');
+      : (RR.zhaiMode === 'face1' ? (r.bid.face === 1 ? '<small>斋</small>' : '') : (r.bid.zhai ? '<small>斋</small>' : ''));
     bv.innerHTML = r.bid.count + ' <small>个</small> ' + r.bid.face + zt;
     bs.textContent = seatLabel(r.bid.by) + '喊出 · 第 ' + r.bid.at + ' 手'
       + (RR.zhaiMode === 'half' ? ' · ' + (r.zhai ? '斋：1 不万能' : '未斋：1 万能') : '')

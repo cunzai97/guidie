@@ -59,7 +59,7 @@ for f in src/*.js web/*.js tests/*.js; do node --check "$f"; done
 python3 -c "import ast; ast.parse(open('serve-dice.py',encoding='utf-8').read())"
 
 # 规则回归（7 个测试分别跑，每个只打一局）
-for t in test-rules test-oracle test-reader test-ranking test-echo-prune test-reflect test-arena-bots test-bots-legal; do node tests/$t.js; done
+for t in test-rules test-oracle test-reader test-deep test-ranking test-echo-prune test-reflect test-arena-bots test-bots-legal; do node tests/$t.js; done
 
 # 无头冒烟（不需要真模型也能跑的部分）
 node src/pk.js --p0 reader --p1 oracle --deals 10 --out runs/bot-check.jsonl

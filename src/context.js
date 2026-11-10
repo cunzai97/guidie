@@ -158,7 +158,7 @@ function legalMenu(round, rules) {
   if (!round.zhai && zc != null && zc >= R.minCount) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
   else if (!round.zhai && zc != null && zc < R.minCount) raises.push(`本轮不能转斋：取半只有 ${zc} 个，不足 ${R.minCount} 个`);
   if (round.zhai && bcMin != null && bcMin <= R.maxCount) {
-    raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（${bcMin}~10 个都行），点数任选；这一手起 1 恢复万能。`
+    raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（${bcMin}~10 个都行），点数 2~6（喊 1 会立刻又进斋）；这一手起 1 恢复万能。`
       + `例：喊 ${bcMin} 个 ${R.faceFree ? '任意点数' : '1'} 破斋——不写「破斋」就只是留在斋里的普通抬价`);
   } else if (round.zhai && bcMin != null) {
     raises.push(`本轮破不了斋：个数要加到 ${bcMin} 个才够，超过全场 10 颗了`);
@@ -167,6 +167,7 @@ function legalMenu(round, rules) {
     + (round.zhai ? '、仍留在斋状态' : '')
     + (round.zhai && bcMin != null && bcMin <= R.maxCount
         ? '；个数到 ' + bcMin + ' 个以上时，想破斋就写明「破斋」，不写仍留在斋里（1 仍不万能）' : ''));
+  if (!round.zhai) raises.push('喊点数 1 即进斋（这一手起 1 不再万能），不用另写「斋」');
   if (!(round.zhai && R.lockFace)) {
     const higher = E.FACE_ORDER.filter(f => E.ord(f) > E.ord(b.face));
     if (higher.length) raises.push('个数保持 ' + b.count + ' 不变、只把点数换成更大的：' + higher.join('/') + ' 任选');

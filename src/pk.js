@@ -6,7 +6,7 @@
  *   node src/pk.js --p0 llm:1235:avalon --p1 reader --deals 2 --rules flex --hp 10
  *   node src/pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
  *   node src/pk.js --p0 reader --p1 oracle --deals 6 --rules flex --effort high
- * player 规格：oracle（纯数学精确期望）| reader（贝叶斯读喊价）| llm:端口:模型名 | wb:模型名
+ * player 规格：oracle | reader | deep（见 bots.js 的 BOTS 注册表）| llm:端口:模型名 | wb:模型名
  * 规则集：--rules classic|flex|自定义id（自定义套从 presets.json 的 settings.ruleSets 读）
  * 计分：血量制。--hp N（或旧名 --target N）= 开局血量兼上限，谁的血先降到 0 谁输。
  * 提示词臂：--prompt <id>（注册表见 context.js 的 ARMS；当前只有 plain=规则 + 这局怎么赢 + 一句话）。
@@ -76,8 +76,8 @@ function makePlayer(spec, globalOpts, log) {
       rules: globalOpts.rules, prompt: globalOpts.prompt, ...reflectOpts,
     }, log);
   }
-  if (spec === 'oracle') return bots.oracleBot();
-  if (spec === 'reader') return bots.readerBot();
+  // bot 规格统一从 bots.js 的注册表取（oracle / reader / deep …），加新 bot 不用改这里
+  if (bots.BOTS[spec]) return bots.makeBot(spec, E.mulberry32(globalOpts.seed || 1));
   throw new Error('未知 player 规格: ' + spec);
 }
 

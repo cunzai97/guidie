@@ -161,13 +161,13 @@ E.applyBid(zb, zb.turn, { type:'bid', count:2, face:4, mode:'toZhai' });
 E.applyBid(zb, zb.turn, { type:'bid', count:4, face:4, mode:'normal' });
 ok(zb.zhai === true, '「2 个 4 斋」后喊「4 个 4」不写破斋 → 仍是斋状态');
 ok(E.breakMinCount(zb) === 9, '斋里已经到 4 个，破斋门槛随之抬到 9 个（4×2+1）');
-// 首喊：点数 1~6 都能喊（喊 1 只是普通点数，不进斋），也能直接喊斋
+// 首喊：点数 1~6 都能喊（喊 1 即斋），也能直接喊斋
 const fs0 = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(41));
 const firstBids = E.legalActions(fs0).filter(a => a.type === 'bid');
 ok([...new Set(firstBids.map(a => a.face))].sort().join('') === '123456', '首喊点数 1~6 全可选');
 ok(R.checkLegal(fs0, { type:'bid', count:2, face:1 }) === null, '首喊可以喊 2 个 1');
 E.applyBid(fs0, fs0.turn, { type:'bid', count:2, face:1 });
-ok(fs0.zhai === false, '首喊喊 1 不会进斋（进斋只能靠转斋 / 写斋）');
+ok(fs0.zhai === true, '首喊喊 1 即以斋开局（喊 1 就是斋）');
 console.log('  [7] 首喊斋 / 2n+1 破斋 / 必须写标记 / 状态切换');
 
 // ---- 7b. 破斋 = 两倍加一：一条规则，同时天然挡掉压价循环 ----
@@ -178,10 +178,11 @@ const xr = E.startRound(xm, E.mulberry32(21));
 E.applyBid(xr, xr.turn, 4, 5);
 E.applyBid(xr, xr.turn, { type:'bid', count:2, face:5, mode:'toZhai' });
 ok(E.breakMinCount(xr) === 5, '破斋门槛 = 2 × 2 + 1 = 5');
-ok(E.breakFaces(xr, 4).length === 0 && E.breakFaces(xr, 5).length === 6, '4 个破不了斋；5 个起、点数任意');
+ok(E.breakFaces(xr, 4).length === 0 && E.breakFaces(xr, 5).join('') === '23456', '4 个破不了斋；5 个起点数 2~6（喊 1 会又进斋）');
 const xset = E.legalActionSet(xr);
 ok(!xset.has('bid:4:6:breakZhai') && !xset.has('bid:4:1:breakZhai'), '只翻倍（4 个）任何时候都破不了斋，与点数无关');
-ok(xset.has('bid:5:2:breakZhai') && xset.has('bid:5:1:breakZhai'), '5 个 + 任意点数都能破斋');
+ok(xset.has('bid:5:2:breakZhai') && xset.has('bid:5:6:breakZhai'), '5 个 + 点数 2~6 都能破斋');
+ok(!xset.has('bid:5:1:breakZhai'), '破斋不能喊 1（喊 1 立刻又是斋）');
 ok(xset.has('bid:4:4:normal'), '不写破斋的 4个4 仍是合法的斋内普通抬价');
 ok(E.normalizeAction(xr, { type:'bid', count:5, face:2 }).mode === 'normal', '漏写标记的 5个2 按普通抬价，不是破斋');
 const xwhy = R.checkLegal(xr, { type:'bid', count:4, face:6, mode:'breakZhai' });
@@ -279,7 +280,7 @@ const ctxt = RS.rulesText(CUSTOM);
 ok(ctxt.includes('ceil(n / 3)') && !ctxt.includes('翻倍破斋') && !ctxt.includes('「劈」'), '规则文本按参数生成');
 // 2026-11-10 计分改为血量制（输家掉血、归零判负），指纹并入 |hp=1：积分制时代的旧 run 与现在不可比。
 ok(RS.hash(CUSTOM) !== RS.hash(FX) && RS.hash('classic') === '413e1d1d', '自定义套指纹独立、经典套指纹随血量制版本锁定');
-ok(RS.hash(FX) === 'c3f2fd4f', 'flex 指纹锁定（破斋＝两倍加一 + 必须写标记 + 个数≥2 + 血量制 + 合法集修正 sv2 + 不许重复喊 nr + 首喊点数可到 1，与更早的 flex 数据不可比）');
+ok(RS.hash(FX) === 'a6e4a59c', 'flex 指纹锁定（破斋＝两倍加一 + 必须写标记 + 个数≥2 + 血量制 + 合法集修正 sv2 + 不许重复喊 nr + 喊 1 即斋，与更早的 flex 数据不可比）');
 console.log('  [9] 自定义规则套参数贯通引擎 / 文本 / 指纹');
 
 // ---- 10. 单局 flex 随机对局（跑到血量归零），覆盖转斋、破斋、劈 ----

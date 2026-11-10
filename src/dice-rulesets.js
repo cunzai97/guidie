@@ -41,7 +41,7 @@
     zhaiMode: 'half', halfDivisor: 2, faceFree: true, lockFace: false,
     breakMultiplier: 2, breakPlus: 1,   // 破斋 = 当前个数 ×2 +1：一条规则既防压价循环，也不用记斋前那一手
     breakRestoresWild: true,
-    firstFace1: true,  // 首喊点数可以是 1~6（喊 1 只是喊 1：未斋时也只数真 1，不等于进斋）
+    firstFace1: true,  // 首喊点数可以是 1~6（喊 1 就直接以斋开局）
     firstZhai: true,   // 首喊也能直接喊斋
     firstMin: 2, firstMax: 6, maxCount: 10,
     slash: true, slashStake: 1, stake: 1, autoInfer: true,
@@ -119,7 +119,7 @@
       + (r.zhaiMode === 'half' ? '|sv=2' : '')
       // 不许重复喊本轮已出现过的同一手（转斋取半会绕回老价位）：合法集与提示词一起变了。
       // 只对 half 套有意义——经典套本来就严格递增，喊不出重复的一手。
-      + (r.zhaiMode === 'half' ? '|nr=1' : '');
+      + (r.zhaiMode === 'half' ? '|nr=1|f1z=1' : '');
     let h = 0x811c9dc5;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
     return ('0000000' + h.toString(16)).slice(-8);
@@ -146,20 +146,22 @@
     if (r.builtin && r.id === 'classic') return null;   // 经典套走 context.js 的逐字文本，指纹不变
     const L = ['大话骰规则（本桌）：两人各 5 颗骰子，全场 10 颗，你只看自己的 5 颗。'];
     L.push('- 喊价「n 个 m」＝ 全场至少有 n 颗点数是 m。点数大小 2 < 3 < 4 < 5 < 6 < 1。');
-    L.push('- 未斋：1 算万能，凑任何点数（除 1）时 1 都顶一个；喊 1 时只数真的 1。斋：1 不算万能。');
+    L.push('- 未斋：1 算万能，凑任何点数（除 1）时 1 都顶一个。斋：1 不算万能，只数真的 1。');
+    L.push('- 喊点数 1 就是进斋：这一手起本轮就是斋，1 不再万能（不用另外写「斋」）。');
     L.push('- 每手个数不得少于 ' + r.minCount + ' 个。');
     L.push('- 抬价两种：个数加得更多（点数任意换）；或个数不变、点数换成更大的。');
     L.push('- 本轮已经喊过的「X 个 Y」不能原样再喊一遍。');
 
     if (r.zhaiMode === 'half') {
       L.push('- 转斋：个数改为上一手取半向上取整 ceil(n / ' + r.halfDivisor + ')，点数'
-        + (r.faceFree ? ' 1~6 任选' : '只能是 1') + '，本轮从此进斋。这是唯一允许个数变小的喊价。'
-        + '行动写「喊 X 个 Y 斋」' + (r.autoInfer ? '；漏写「斋」但个数正好是取半值，也按转斋算。' : '，不写「斋」就按普通抬价判。'));
+        + (r.faceFree ? ' 1~6 任选' : '只能是 1') + '，本轮从此进斋。这是唯一允许个数变小的喊价，也是不喊 1 就进斋的路子。'
+        + '行动写「喊 X 个 Y 斋」'
+        + (r.autoInfer ? '；漏写「斋」但个数正好是取半值，也按转斋算。' : '，不写「斋」就按普通抬价判。'));
       if (r.breakMultiplier) {
         L.push('- 破斋：个数要到当前的 ' + r.breakMultiplier + ' 倍'
           + (r.breakPlus ? '再加 ' + r.breakPlus : '') + '（当前 n 个就要 ' + r.breakMultiplier + 'n'
           + (r.breakPlus ? '+' + r.breakPlus : '') + ' 个），并写明「破斋」，才回到未斋；'
-          + '点数任选。个数够了却没写「破斋」，只是斋里的普通抬价。'
+          + '点数只能 2~6（喊 1 会立刻又进斋）。个数够了却没写「破斋」，只是斋里的普通抬价。'
           + (r.breakRestoresWild ? '破斋这一手起 1 恢复万能。' : '')
           + '行动写「喊 X 个 Y 破斋」。');
       } else L.push('- 本桌不能破斋：进了斋，本轮剩下的喊价都在斋里。');
@@ -168,7 +170,7 @@
       L.push('- 有人喊到点数 1 即进入斋：此后 1 不算万能，且只能继续加 1 的个数（不能换点数）。');
     }
 
-    L.push('- 首喊：个数 ' + r.firstMin + '~' + r.firstMax + '、点数 ' + (r.firstFace1 ? '1~6（喊 1 只是喊 1，不进斋）' : '2~6')
+    L.push('- 首喊：个数 ' + r.firstMin + '~' + r.firstMax + '、点数 ' + (r.firstFace1 ? '1~6（喊 1 直接以斋开局）' : '2~6')
       + '；不能开盅' + (r.slash ? '、劈' : '') + '、破斋'
       + (r.zhaiMode === 'half' && r.firstZhai ? '。写「斋」可以直接以斋开局，不取半' : '，也不能转斋') + '。');
     L.push('- 开盅：质疑当前最高价并亮牌。够数 → 开的人输；不够 → 喊的人输。输家 −' + r.stake + ' 血'

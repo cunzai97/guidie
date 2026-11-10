@@ -120,11 +120,12 @@
   }
   // 破斋的唯一条件：个数 ≥ 当前个数 × k + plus（新规 = 2n+1），点数任选。
   // 写不写「破斋」决定它「算不算」破斋（不写就只是斋里的普通抬价）。
-  function canBreak(round, count) {
+  function canBreak(round, count, face) {
     const R = rulesOf(round);
     if (!R.breakMultiplier || !round.zhai || !round.bid) return false;
     const min = breakMinCount(round);
-    return min != null && count >= min && count <= R.maxCount;
+    if (min == null || count < min || count > R.maxCount) return false;
+    return face == null || face !== 1;      // 破斋不能喊 1：喊 1 立刻又是斋
   }
   // 某个个数下允许写「破斋」的点数；count 省略时按最低的翻倍个数算。
   // 返回 null=本桌此刻谈不上破斋；[]=这个个数破不了斋；否则为合法点数列表。
@@ -134,7 +135,8 @@
     const min = breakMinCount(round);
     if (min == null) return null;
     const c = count == null ? min : count;
-    return (c < min || c > R.maxCount) ? [] : FACES.slice();
+    // 破斋是「1 恢复万能」，所以点数只能 2~6：喊 1 会立刻又进斋（喊 1 就是斋）。
+    return (c < min || c > R.maxCount) ? [] : FACES.filter(f => f !== 1);
   }
   // 兼容旧名字：「个数至少到这个值才能破斋」（旧语义里它也是唯一的可用个数）。
   function breakCount(round) {
@@ -161,13 +163,15 @@
   }
 
   // 状态推进：这一手之后本轮是否处于斋。
+  // 关键一条：喊点数 1 就是斋——两套规则都一样，不靠「斋」这个字。
+  // 破斋是「回到 1 万能」，所以破斋这一手不能喊 1（喊 1 又立刻进斋，自相矛盾）。
   function zhaiAfter(round, a) {
     const R = rulesOf(round);
-    if (R.zhaiMode === 'face1') return a.type === 'bid' && a.face === 1;
     if (a.type !== 'bid') return !!round.zhai;
+    if (R.zhaiMode === 'face1') return a.face === 1;
+    if (a.mode === 'breakZhai') return a.face === 1 ? true : false;
     if (a.mode === 'toZhai') return true;
-    if (a.mode === 'breakZhai') return false;
-    return !!round.zhai;
+    return a.face === 1 ? true : !!round.zhai;
   }
 
   function actionKey(a) {

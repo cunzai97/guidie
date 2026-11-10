@@ -16,9 +16,9 @@
 function legalActions(round) {
   return E.legalActions(round).map(a => {
     if (a.type !== 'bid') return a;
-    // 概率估算要知道这一手结算时 1 是否算万能
-    const zhai = a.mode === 'toZhai' ? true : a.mode === 'breakZhai' ? false : !!round.zhai;
-    return Object.assign({}, a, { zhai: E.rulesOf(round).zhaiMode === 'face1' ? (a.face === 1) : zhai });
+    // 概率估算要知道这一手结算时 1 是否算万能——统一问引擎，别在下游再猜一遍
+    // （喊 1 即斋这条规则只在 zhaiAfter 里维护一次）。
+    return Object.assign({}, a, { zhai: E.zhaiAfter(round, a) });
   });
 }
 
@@ -231,6 +231,182 @@ function readerHelpers(BETA, GAMMA, EPS) {
   return { isZ, pOf, hCnt, pHat, pOpenH, hypo, policy, belief, repsOf };
 }
 
+/* deep：比 reader 更强的基线。
+ *
+ * reader 的三处结构性弱点，deep 各补一个：
+ *  ① 它估「对手会不会开盅」时只用对手自己的手牌（pOpenH(b,h) 里没有我方信息），等于假设
+ *     对手不看我们的喊价。deep 维护两份后验：我方对对手手牌，以及「对手对我方手牌」的
+ *     后验（用同一套滤波跑我方座位）。对手开盅概率按它自己的后验算 → 诈唬的代价被算回来。
+ *  ② reader 的叶子先把后验塌缩成一个平均手牌，再把「抬价后继续博弈」记 0。deep 的期望
+ *     直接按「对手具体是哪手牌 h」逐条展开（我方手牌已知，真值是确定的），叶子给出
+ *     「开掉 / 反抬」两条路的实际价值。
+ *  ③ reader 用固定 ±1 的相对分。deep 用「赢下整局」的概率差做效用：终盘斩杀远重于
+ *     一次 +1 回血，自己只剩 1 血时也自动变保守。
+ * 另加一条 reader 没有的东西：多个候选的期望几乎打平（差 < slack）时，选让对手后验
+ *     移动最少的那一手——同样赚，但少喂情报。
+ * 零训练、零拟合、确定性；只在合法动作集里选。
+ */
+function deepBot(opts = {}) {
+  const BETA = opts.beta == null ? 6 : opts.beta;
+  const GAMMA = opts.gamma == null ? 10 : opts.gamma;
+  const EPS = opts.eps == null ? 0.1 : opts.eps;
+  const SLACK = opts.slack == null ? 0.001 : opts.slack;  // 期望打平带（赢局概率单位）；一次开盅只值 ~0.026，别设大
+  // 对手类型混合：READ 比例假设对手「会读我」（按它对我方后验判真假），其余按「只看自己手牌」
+  // （reader/oracle 那一类阈值式打法）。单押一边会偏：只押「会读我」时对 oracle 这种不看人的打法
+  // 会系统低估它的开盅率，实测对 oracle 只有 8% 胜率；混合后两头都不吃亏。
+  const READ = opts.read == null ? 0.5 : opts.read;
+  const H = readerHelpers(BETA, GAMMA, EPS);
+  const tuned = opts.beta != null || opts.gamma != null || opts.eps != null || opts.read != null;
+  const N = HANDS.length;
+  const logit = x => 1 / (1 + Math.exp(-x));
+
+  // 手牌权重按「对某个喊价的贡献个数」分桶 → 尾和表：S[k] = P(贡献 ≥ k)
+  function tailTable(w, b) {
+    const B = new Float64Array(11);
+    for (let i = 0; i < N; i++) { const c = H.hCnt(b, HANDS[i]); B[c > 10 ? 10 : c] += w[i]; }
+    const S = new Float64Array(12);
+    for (let c = 10; c >= 0; c--) S[c] = S[c + 1] + B[c];
+    return S;
+  }
+  const tailAt = (S, need) => need <= 0 ? 1 : need > 10 ? 0 : S[need];
+
+  return {
+    name: tuned ? `deep(${BETA},${GAMMA},${EPS},${SLACK},${READ})` : 'deep',
+    decide(match, who) {
+      const t0 = Date.now();
+      const r = match.round, R = E.rulesOf(r), opp = E.other(who);
+      const myN = [0, 0, 0, 0, 0, 0, 0], myE = [0, 0, 0, 0, 0, 0, 0];
+      for (const d of r.dice[who]) myN[d]++;
+      for (let f = 1; f <= 6; f++) myE[f] = myN[f] + (f === 1 ? 0 : myN[1]);
+      const mine = b => H.isZ(b) ? myN[b.face] : myE[b.face];
+
+      // 手牌贡献表（按 点数:斋态 缓存），避免在手牌循环里反复算
+      const cntCache = new Map();
+      const cntFor = b => {
+        const k = b.face + ':' + (H.isZ(b) ? 1 : 0);
+        let a = cntCache.get(k);
+        if (!a) { a = new Int8Array(N); for (let i = 0; i < N; i++) a[i] = H.hCnt(b, HANDS[i]); cntCache.set(k, a); }
+        return a;
+      };
+
+      // 效用：赢下整局概率的变化（终盘斩杀自动加权，快输时自动保守）
+      const hpMe = match.hp[who], hpOpp = match.hp[opp], hpMax = match.hpMax;
+      const W = (a, b) => { const t = a + b; return t <= 0 ? 0.5 : a / t; };
+      const U = (won, k, pays) => {
+        const base = W(hpMe, hpOpp);
+        return won
+          ? W(Math.min(hpMax, hpMe + (pays ? k : 0)), Math.max(0, hpOpp - k)) - base
+          : W(Math.max(0, hpMe - k), Math.min(hpMax, hpOpp + (pays ? k : 0))) - base;
+      };
+      const kOpen = R.stake, paysOpen = !!R.openLoserLoses;
+      const kSlash = R.slashStake, paysSlash = true;
+      const winV = U(true, kOpen, paysOpen), loseV = U(false, kOpen, paysOpen);
+      const winSV = R.slash ? U(true, kSlash, paysSlash) : 0, loseSV = R.slash ? U(false, kSlash, paysSlash) : 0;
+
+      // 两份后验：我方读对手；对手读我方（同一套滤波，座位换过来）
+      const wMine = H.belief(r, opp);
+      const wTheirs0 = H.belief(r, who);
+
+      const lbNow = legalActions(r).filter(a => a.type === 'bid');
+      const cand = H.repsOf(lbNow);
+      const keyOf = a => E.actionKey(a);
+      const idxIn = a => { const k = keyOf(a); for (let i = 0; i < lbNow.length; i++) if (keyOf(lbNow[i]) === k) return i; return -1; };
+      const polMine = new Array(N);
+      for (let i = 0; i < N; i++) polMine[i] = H.policy(r, HANDS[i], lbNow);
+
+      // 对手看到我方喊 b1 之后，它对我方手牌的后验
+      function beliefAfterOur(i1) {
+        const w = new Float64Array(N);
+        let tot = 0;
+        for (let i = 0; i < N; i++) { w[i] = wTheirs0[i] * polMine[i].bids[i1]; tot += w[i]; }
+        if (tot < 1e-300) { for (let i = 0; i < N; i++) w[i] = HANDS[i].w; return w; }
+        for (let i = 0; i < N; i++) w[i] /= tot;
+        return w;
+      }
+
+      let bestAct = null, bestEV = -Infinity, bestLeak = Infinity;
+      function consider(act, ev, leak) {
+        if (ev > bestEV + 1e-12) { bestEV = ev; bestAct = act; bestLeak = leak; return; }
+        if (ev > bestEV - SLACK && leak < bestLeak) { bestAct = act; bestLeak = leak; }
+      }
+      // ① 开盅 / 劈（对手当前这一手）
+      if (r.bid) {
+        const b0 = r.bid, c0 = cntFor(b0), my0 = mine(b0);
+        let ev = 0, evS = 0;
+        for (let i = 0; i < N; i++) {
+          const tru = my0 + c0[i] >= b0.count;
+          ev += wMine[i] * (tru ? loseV : winV);
+          if (R.slash) evS += wMine[i] * (tru ? loseSV : winSV);
+        }
+        if (R.slash && evS > ev) consider({ type: 'open', slash: true }, evS, Infinity);
+        else consider({ type: 'open', slash: false }, ev, Infinity);
+      }
+
+      // ② 每个候选喊价
+      for (const b1 of cand) {
+        const i1 = idxIn(b1);
+        if (i1 < 0) continue;
+        const c1 = cntFor(b1), my1 = mine(b1);
+        const wT = beliefAfterOur(i1);
+        const S1 = tailTable(wT, b1);              // 对手视角：我方对 b1 的贡献尾分布
+        const hr1 = H.hypo(r, b1, who);
+        const lb1 = H.repsOf(legalActions(hr1).filter(a => a.type === 'bid'));
+        const polOpp = new Array(N);
+        for (let i = 0; i < N; i++) polOpp[i] = H.policy(hr1, HANDS[i], lb1);
+
+        // 预处理二层：每个对手反价 b2 的手牌贡献、我方开它的价值、以及三层候选 b3
+        const pre2 = lb1.map(b2 => {
+          const hr2 = H.hypo(hr1, b2, opp);
+          const b3s = H.repsOf(legalActions(hr2).filter(a => a.type === 'bid'));
+          return {
+            c: cntFor(b2), my: mine(b2), need: b2.count,
+            lvl3: b3s.map(b3 => ({ b: b3, c: cntFor(b3), S: tailTable(wT, b3), my: mine(b3), need: b3.count })),
+          };
+        });
+
+        let ev = 0;
+        for (let i = 0; i < N; i++) {
+          const w = wMine[i];
+          if (w <= 0) continue;
+          const pTruth1 = (1 - READ) * H.pHat(b1, HANDS[i]) + READ * tailAt(S1, b1.count - c1[i]);
+          const pOpen = logit(GAMMA * (0.5 - pTruth1));
+          const ourTruth1 = my1 + c1[i] >= b1.count;
+          let v = pOpen * (ourTruth1 ? winV : loseV);
+          if (pOpen < 1) {
+            let cont = 0;
+            for (let j = 0; j < lb1.length; j++) {
+              const pj = polOpp[i].bids[j];
+              if (pj <= 1e-9) continue;
+              const P = pre2[j];
+              const tru2 = P.my + P.c[i] >= P.need;
+              let vv = tru2 ? loseV : winV;                      // 我方开掉 b2
+              if (R.slash) { const s2 = tru2 ? loseSV : winSV; if (s2 > vv) vv = s2; }
+              for (let t = 0; t < P.lvl3.length; t++) {
+                const Q = P.lvl3[t];
+                const pT3 = (1 - READ) * H.pHat(Q.b, HANDS[i]) + READ * tailAt(Q.S, Q.need - Q.c[i]);
+                const pO3 = logit(GAMMA * (0.5 - pT3));
+                const t3 = Q.my + Q.c[i] >= Q.need;
+                const v3 = pO3 * (t3 ? winV : loseV);
+                if (v3 > vv) vv = v3;
+              }
+              cont += pj * vv;
+            }
+            v += (1 - pOpen) * cont;
+          }
+          ev += w * v;
+        }
+        // 情报代价：对手对我方手牌的后验移动量（越小越难被读）
+        let leak = 0;
+        for (let i = 0; i < N; i++) leak += Math.abs(wT[i] - wTheirs0[i]);
+        consider(b1, ev, leak);
+      }
+      const out = bestAct || { type: 'open', slash: false };
+      if (opts.debug) out.ms = Date.now() - t0;
+      return out;
+    },
+  };
+}
+
 // 测试钩子：直接看后验（默认参数）
 function readerBelief(round, who, opts = {}) {
   const H = readerHelpers(opts.beta == null ? 6 : opts.beta, opts.gamma == null ? 10 : opts.gamma, opts.eps == null ? 0.1 : opts.eps);
@@ -323,7 +499,8 @@ function readerBot(opts = {}) {
  */
 const BOTS = {
   'oracle': { label: 'oracle · 期望最大化', desc: '算清对手手牌分布再决策，纯数学地板，很慢', make: () => oracleBot() },
-  'reader': { label: 'reader · 贝叶斯读牌', desc: '把对手喊价当情报读，最强基线', make: () => readerBot() },
+  'reader': { label: 'reader · 贝叶斯读牌', desc: '把对手喊价当情报读', make: () => readerBot() },
+  'deep':   { label: 'deep · 双向读牌 + 终盘', desc: 'reader 的加强版：对手也会读我、叶子按手牌展开、效用按赢局概率', make: () => deepBot() },
 };
 function makeBot(spec, rng) {
   const b = BOTS[spec];
@@ -331,5 +508,5 @@ function makeBot(spec, rng) {
   return b.make(rng || Math.random);
 }
 
-return { legalActions, oracleBot, readerBot, readerBelief, qOpen, tail5, BOTS, makeBot };
+return { legalActions, oracleBot, readerBot, readerBelief, deepBot, qOpen, tail5, BOTS, makeBot };
 });

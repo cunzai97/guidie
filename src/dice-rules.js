@@ -92,6 +92,9 @@
       return legal.has(E.actionKey(norm)) ? null : '这一手不合法。';
     }
     const count = norm.count, face = norm.face;
+    // 斋里写「斋」是幂等标记（normalizeAction 已折成普通抬价），但整手仍不合法时要说清原因。
+    if (a && (a.mode === 'toZhai') && R.zhaiMode === 'half' && r.zhai && !legal.has(E.actionKey(norm)))
+      return '本轮已经在斋里：转斋只能从「未斋」进入。按普通抬价（加个数，或个数不变换更大点数），或者写明「破斋」。';
     if (!(count >= R.minCount && count <= R.maxCount)) return '个数至少 ' + R.minCount + ' 个、最多 ' + R.maxCount + ' 个（全场一共 10 颗骰子；本桌任何喊价都不许少于 ' + R.minCount + ' 个，转斋取半后不够 ' + R.minCount + ' 个也不许转）。';
     if (!(face >= 1 && face <= 6)) return '点数只能是 1 到 6。';
     if (norm.mode === 'toZhai') {
@@ -111,6 +114,7 @@
       if (!r.zhai) return '本轮还没进斋，谈不上破斋。';
       const min = E.breakMinCount(r);
       if (min == null || min > R.maxCount) return '翻倍后会超过 10 颗，这一手破不了斋。';
+      if (face === 1) return '破斋不能喊点数 1：喊 1 立刻又是斋，破斋这一手只能喊 2~6。';
       if (count < min) return '破斋的个数要到当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍'
         + (R.breakPlus ? '再加 ' + R.breakPlus : '') + '，也就是 ' + min + ' 个以上。';
     }

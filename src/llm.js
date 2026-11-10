@@ -1,5 +1,5 @@
 /* LLM 玩家：OpenAI 兼容 chat/completions（非流式，无头跑批更简单）。
- * 提示词两臂（cfg.prompt）：'classic' 逐字保持原版；'probe' 为轻量引导臂（见 context.js）。
+ * 提示词只有一套（见 context.js）：完整规则 + 「这局怎么赢」+ 一句收尾；连败反思作为独立一段追加。
  * 输出预算默认 8192：reasoning 长的模型不该因为"想得久"被判负。截断时保留未完思考并续写催决断。
  * 归因原则：解析→规则校验→有限重写（最多 maxAsks 次）；仍给不出合法动作就判负，
  * 绝不让 harness 替模型走棋。连接级错误单独退避重试，不计入"模型答错"。
@@ -46,17 +46,11 @@ function unfinished(out, parsed) {
   return !C.ACTION_LINE_RE.test(lines[lines.length - 1] || '');
 }
 
-function retryMessage(out, echo, ask, variant, rules) {
+function retryMessage(out, echo, ask, rules) {
   const R = require('./dice-rulesets.js').normalize(rules || 'classic');
   const flex = R.zhaiMode === 'half' || R.slash;
-  const base = variant === 'probe'
-    ? '「行动：喊 X 个 Y」或「行动：开盅」'
-    : '「喊 X 个 Y」或「开盅」';
-  const act = flex
-    ? base + (variant === 'probe'
-        ? '（转斋写「行动：喊 X 个 Y 斋」、破斋写「行动：喊 X 个 Y 破斋」、劈写「行动：劈」）'
-        : '（转斋写「喊 X 个 Y 斋」、破斋写「喊 X 个 Y 破斋」、劈写「劈」）')
-    : base;
+  const act = '「喊 X 个 Y」或「开盅」'
+    + (flex ? '（转斋写「喊 X 个 Y 斋」、破斋写「喊 X 个 Y 破斋」、劈写「劈」）' : '');
   if (out.finish === 'length') {
     return ask === 1
       ? '你刚才的思考在给出决断前被截断了，上一条消息保留着你的原始思路。请接着它往下想完，立即对这一手做出决断：不要从头重来，也不要只写分析；把结论写成最后一行 ' + act + '。'
@@ -70,8 +64,9 @@ function makeLLMPlayer(cfg, log = () => {}) {
   const {
     name, baseUrl, model, apiKey = null,
     thinking = false, effort = (cfg.thinking ? 'high' : 'off'), maxTokens = 8192, temperature = 0.7,
-    timeoutMs = 300000, connRetries = 4, maxAsks = 3, coach = false,
-    context = 'chat', prompt = 'classic', rules = 'classic',
+    timeoutMs = 300000, connRetries = 4, maxAsks = 3,
+    context = 'chat', prompt = null, rules = 'classic',
+    reflectTokens = 16384, reflectEffort = 'high',   // 连败深度反思的写作/思考预算
   } = cfg;
   const RS = require('./dice-rulesets.js');
   const RULE = RS.normalize(rules);
@@ -83,35 +78,42 @@ function makeLLMPlayer(cfg, log = () => {}) {
   let cursor = null;        // buildTurn 的进度游标
   let sys = null;
   let callKey = {};         // 当前调用的事件主键，由 runner 经 decide/summarize 注入
+  // 连败反思臂：跨局保留（reset 不清），下一局起取代兵书/此前总结，成为唯一策略指导
+  let reflection = '', reflectStreak = 0;
 
-  function reset() { messages = []; backbone = []; working = []; cursor = null; sys = null; callKey = {}; }
+  // 反思随局清空：按设计只在本局内生效（M4 局间清空原则），下一局重新从兵书开始
+  function reset() { messages = []; backbone = []; working = []; cursor = null; sys = null; callKey = {}; reflection = ''; reflectStreak = 0; }
 
   // 思考强度：off=不思考；low/medium/high/xhigh=逐档加深。
   // 本地 llama-server 认 chat_template_kwargs.enable_thinking + thinking_budget；
   // 远程网关多数认 OpenAI 风格的 reasoning_effort。两套参数都发，端点不认的字段会自行忽略。
-  function applyEffort(body) {
-    const e = String(effort || 'off').toLowerCase();
+  function applyEffort(body, effOverride) {
+    const e = String(effOverride || effort || 'off').toLowerCase();
     if (e === 'off') {
       if (cfg.thinkingKwargs !== false) body.chat_template_kwargs = { enable_thinking: !!thinking };
       return body;
     }
+    // 两套参数不能同时发：llama-server 会把 reasoning_effort 透传进 Jinja 模板，
+    // avalon 模板对不认识的档位直接 raise（实测 high → HTTP 500）。本地只发 kwargs，远程只发 effort。
     if (cfg.thinkingKwargs !== false) {
       const budget = { low: 1024, medium: 4096, high: 12288, xhigh: 24576 }[e] || 4096;
       body.chat_template_kwargs = { enable_thinking: true, thinking_budget: budget };
+    } else {
+      body.reasoning_effort = ['low', 'medium', 'high', 'xhigh'].includes(e) ? e : 'medium';
     }
-    body.reasoning_effort = ['low', 'medium', 'high', 'xhigh'].includes(e) ? e : 'medium';
     return body;
   }
 
-  async function callMessages(msgs, phase = 'play') {
-    const body = applyEffort({ model, messages: msgs, max_tokens: maxTokens, temperature, stream: false });
+  async function callMessages(msgs, phase = 'play', override = {}) {
+    const body = applyEffort({ model, messages: msgs, max_tokens: override.maxTokens || maxTokens, temperature, stream: false }, override.effort);
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
+    const useTimeout = override.timeoutMs || timeoutMs;
     let lastErr = null;
     for (let i = 0; i <= connRetries; i++) {
       const t0 = Date.now();
       const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      const timer = setTimeout(() => ctl.abort(), useTimeout);
       try {
         const res = await fetch(baseUrl.replace(/\/$/, '') + '/chat/completions', {
           method: 'POST', headers,
@@ -156,7 +158,12 @@ function makeLLMPlayer(cfg, log = () => {}) {
   // 截断）只在临时副本 work 上堆叠供当回合纠正，绝不写入 messages——否则一次随机回声会被持久
   // 上下文逐手照抄，放大成整局判负（实测：game2 一次回声 → 5 轮连判）。判负也只留一条中性记录。
   async function decideChat(match, who) {
-    if (!sys) { sys = C.buildSystem(match.roundTarget, { coach, variant: prompt, rules: RULE }); messages.push({ role: 'system', content: sys }); }
+    if (!sys) {
+      sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
+      // 局内反思后重建：替换首条 system（保留其余局史），不能重复 push
+      if (messages.length && messages[0] && messages[0].role === 'system') messages[0] = { role: 'system', content: sys };
+      else messages.push({ role: 'system', content: sys });
+    }
     const turn = C.buildTurn(match, who, cursor, { variant: prompt, rules: RULE });
     cursor = turn.next;
     messages.push({ role: 'user', content: turn.text });   // 局面事件入史
@@ -189,7 +196,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
       // 存在空 content 消息直接 400 拒绝整个请求，重试脚手架带着空消息会连撞 4 次把整局打成未评。
       const emptyBody = !String(out.content || '').trim() && out.finish !== 'length';
       work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : (emptyBody ? '（输出为空：只有思考没有正文，需重新给出判断与行动）' : out.content)) });
-      work.push({ role: 'user', content: retryMessage(out, echo, ask, prompt, RULE) });
+      work.push({ role: 'user', content: retryMessage(out, echo, ask, RULE) });
     }
     // 有限重写后仍非法 → 判负（harness 不替它走棋）；持久历史只留中性判负记录，不留回声。
     messages.push({ role: 'assistant', content: '（本回合我未能给出合法行动，判负。）' });
@@ -198,7 +205,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
 
   // 摘要链模式：轮内逐字工作记忆（working）+ 跨轮压缩笔记链（backbone）。重试脚手架同样不入 working。
   async function decideMemory(match, who) {
-    if (!sys) sys = C.buildSystem(match.roundTarget, { coach, variant: prompt, rules: RULE });
+    if (!sys) sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
     const turn = C.buildTurn(match, who, cursor, { noHistory: true, variant: prompt, rules: RULE });   // 逐字局史由 backbone 笔记携带，不在此堆积
     cursor = turn.next;
     working.push({ role: 'user', content: turn.text });
@@ -228,7 +235,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
       // 截断时完整保留未完思考（不能换成中性标记），供模型接着想完；空正文换占位防上游 400
       const emptyBody = !String(out.content || '').trim() && out.finish !== 'length';
       work.push({ role: 'assistant', content: out.finish === 'length' ? out.content : (echo ? '（输出无效：复述了局面提示，没有给出行动）' : (emptyBody ? '（输出为空：只有思考没有正文，需重新给出判断与行动）' : out.content)) });
-      work.push({ role: 'user', content: retryMessage(out, echo, ask, prompt, RULE) });
+      work.push({ role: 'user', content: retryMessage(out, echo, ask, RULE) });
     }
     working.push({ role: 'assistant', content: '（本回合我未能给出合法行动，判负。）' });
     return { type: 'forfeit', attempts, asks: maxAsks, judgment: '' };
@@ -239,7 +246,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
   // （纯压缩，真值由 harness 另存供保真度对照）。
   async function summarize(match, who, result, meta) {
     if (meta) callKey = { ...meta };
-    if (!sys) sys = C.buildSystem(match.roundTarget, { coach, variant: prompt, rules: RULE });
+    if (!sys) sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
     const roundNo = match.roundNo;
     const summaryPrompt = C.buildSummaryPrompt(match, who, result, { variant: prompt, rules: RULE });
     let work = [{ role: 'system', content: sys }, ...backbone, ...working, { role: 'user', content: summaryPrompt }];
@@ -263,7 +270,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
 
   // 快照模式（旧行为，对比臂）
   async function decideSnapshot(match, who, ownMemo) {
-    const sysS = C.buildSystem(match.roundTarget, { coach, variant: prompt, rules: RULE });
+    const sysS = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
     const uopts = { ownMemo: ownMemo || [], variant: prompt, rules: RULE };
     let user = C.buildUser(match, who, uopts);
     const attempts = [];
@@ -280,7 +287,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
         const carry = out.finish === 'length'
           ? '\n\n【你上一次的思考在决断前被截断了，原文附在下面，请接着它想完】\n' + out.content.slice(-1200) + '\n【原文结束】\n'
           : '';
-        user = C.buildUser(match, who, uopts) + carry + '\n\n' + retryMessage(out, false, ask, prompt, RULE);
+        user = C.buildUser(match, who, uopts) + carry + '\n\n' + retryMessage(out, false, ask, RULE);
         continue;
       }
       const why = C.checkLegal(match.round, parsed.action);
@@ -290,8 +297,53 @@ function makeLLMPlayer(cfg, log = () => {}) {
     return { type: 'forfeit', attempts, asks: maxAsks, judgment: '' };
   }
 
+  /* 局内连轮深度反思：runner 在局内连续输掉 N 轮后调用。
+   * 输入=本局进行到现在的逐轮完整记录（双方真实手牌/喊价/被质疑手/结算）+ 连输轮数；
+   * 输出=模型自己写的反思，立刻取代本局此前的轮末总结与系统提示里的策略建议，下一轮起生效。
+   * 给足写作预算（reflectTokens）与思考预算（reflectEffort），单次调用，不重写不兜底。 */
+  async function reflect(info = {}) {
+    const streakN = info.streak || 0;
+    const seat = info.seat || 'A';
+    const me = x => (x === seat ? '你' : '对手');
+    const h = info.history || [];
+    const L = [];
+    L.push(`你正在和同一个对手（一个固定的博弈程序）对局。你目前已经连续输掉 ${streakN} 轮。`);
+    L.push('下面是你本局到目前为止的完整记录：每轮双方真实手牌、喊价、被质疑的那一手、亮牌结算。');
+    for (const r of h) {
+      const handTxt = side => '[' + (r.dice[side] || []).join(' ') + ']';
+      const z = r.bid && r.bid.zhai ? '（斋）' : '';
+      const act = r.slash ? '劈' : '开盅';
+      const pay = r.loserPays === false ? '（赢家不回血）' : '';
+      L.push(`第${r.no}轮：你 ${handTxt(seat)}，对手 ${handTxt(seat === 'A' ? 'B' : 'A')}；${me(r.bid.by)}喊 ${r.bid.count}个${r.bid.face}${z}，${me(r.opener)}${act}，全场实际 ${r.actual} 个（${r.truth ? '够' : '不够'}）→ ${me(r.winner)} 赢，${me(r.loser)} 输${pay}。`);
+    }
+    L.push('请做一次深刻的反思总结，把你学到的全部写下来：');
+    L.push('1) 对手的打法规律是什么？它凭什么连续赢你？');
+    L.push('2) 你的哪些判断、习惯、前提错了？被利用的是哪一点？');
+    L.push('3) 接下来每一手具体该怎么打？写成可执行的规则（什么局面开盅/劈、什么局面喊什么、什么时候诈唬）。');
+    L.push('事实提醒：本游戏没有「过 / 接受 / 跟注 / 不质疑」这类选项，轮到你时只能在合法喊价或开盅/劈之间选择。');
+    L.push('不要省略，不要客套，尽量详尽。这段总结立刻生效：它取代你之前所有的轮末总结和系统提示里的策略建议，成为你此后唯一的打法指导。');
+    const msg = [
+      { role: 'system', content: '你正在复盘自己连输的对局，目标是把教训写成可执行的打法规则。' },
+      { role: 'user', content: L.join('\n') },
+    ];
+    const out = await callMessages(msg, 'reflect', { maxTokens: reflectTokens, effort: reflectEffort, timeoutMs: Math.max(timeoutMs, 1800000) });
+    const text = String(out.content || '').trim();
+    if (text) {
+      reflection = text;
+      reflectStreak = streakN;
+      sys = null;        // 下一轮起按含反思的系统提示重建
+      backbone = [];     // 取代此前所有轮末总结
+      if (messages.length && messages[0] && messages[0].role === 'system') {
+        messages[0] = { role: 'system', content: C.buildSystem(info.hpMax || info.target || 10, { variant: prompt, rules: RULE, reflection: { streak: reflectStreak, text: reflection } }) };
+      }
+      log({ kind: 'reflection', name, model, streak: streakN, round: info.round || null,
+            text, promptTokens: out.promptTokens, completionTokens: out.completionTokens, ms: out.ms });
+    }
+    return text;
+  }
+
   return {
-    name, isLLM: true, model, context, reset,
+    name, isLLM: true, model, context, reset, reflect,
     async decide(match, who, ownMemo, meta) {
       if (meta) callKey = { ...meta };        // runner 注入 { run_id, deal, swap, game, round, step, seat }
       if (context === 'snapshot') return decideSnapshot(match, who, ownMemo);

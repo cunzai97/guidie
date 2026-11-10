@@ -62,9 +62,9 @@
       <div class="vs-badge"><span>VS</span></div>
       <button class="start-btn" id="btnStart"><b>开 战</b><small>启动对局</small></button>
       <div class="quick-params">
-        <label>目标分 <select id="qTarget"><option value="3">+3</option><option value="5">+5</option><option value="10" selected>+10</option><option value="15">+15</option></select></label>
+        <label>初始血量 <select id="qTarget"><option value="5">5 点</option><option value="8">8 点</option><option value="10" selected>10 点</option><option value="15">15 点</option><option value="20">20 点</option></select></label>
         <label>节奏 <select id="qSpeed"><option value="0">极速</option><option value="400" selected>正常</option><option value="1500">慢放</option></select></label>
-        <label>提示词 <select id="qVariant"><option value="classic">经典兵书</option><option value="probe" selected>自主博弈</option></select></label>
+        <label>提示词 <select id="qVariant" aria-label="选择提示词臂"></select></label>
         <label>规则 <select id="qRules" aria-label="选择规则套"></select></label>
       </div>
     </div>
@@ -101,7 +101,7 @@
 
       <div class="score-block">
         <div class="score-num" id="scoreA">0</div>
-        <div class="score-side"><span>积分</span><div class="rail"><i id="railA"></i></div></div>
+        <div class="score-side"><span>血量</span><div class="rail"><i id="railA"></i></div></div>
       </div>
 
       <div class="last-act" id="lastActA"><span class="last-cap">最近一手</span><b id="lastTextA">—</b></div>
@@ -146,7 +146,7 @@
 
       <div class="score-block">
         <div class="score-num" id="scoreB">0</div>
-        <div class="score-side"><span>积分</span><div class="rail"><i id="railB"></i></div></div>
+        <div class="score-side"><span>血量</span><div class="rail"><i id="railB"></i></div></div>
       </div>
 
       <div class="last-act" id="lastActB"><span class="last-cap">最近一手</span><b id="lastTextB">—</b></div>
@@ -276,12 +276,12 @@
             <label class="check"><input id="rFirstFace1" type="checkbox"><span>首喊允许点数 1</span></label>
             <label class="check"><input id="rBreakRestoresWild" type="checkbox"><span>破斋后 1 恢复万能</span></label>
             <label class="check"><input id="rAutoInfer" type="checkbox"><span>漏写标记按个数自动推断</span></label>
-            <label class="check"><input id="rSlash" type="checkbox"><span>启用「劈」 <i>双向结算、扣输家分</i></span></label>
-            <label class="check"><input id="rOpenLoserLoses" type="checkbox"><span>开盅输家也扣分 <i>关=只有赢家得分</i></span></label>
+            <label class="check"><input id="rSlash" type="checkbox"><span>启用「劈」 <i>双向结算、赢家回血</i></span></label>
+            <label class="check"><input id="rOpenLoserLoses" type="checkbox"><span>开盅赢家也回血 <i>关=只有输家掉血</i></span></label>
           </div>
           <div class="field-row">
-            <label class="field"><span>普通开盅积分 ±</span><input id="rStake" type="number" min="1" max="5" step="1" value="1"></label>
-            <label class="field"><span>劈的积分 ±</span><input id="rSlashStake" type="number" min="1" max="5" step="1" value="2"></label>
+            <label class="field"><span>普通开盅扣血</span><input id="rStake" type="number" min="1" max="5" step="1" value="1"></label>
+            <label class="field"><span>劈的 ±</span><input id="rSlashStake" type="number" min="1" max="5" step="1" value="2"></label>
             <label class="field"><span>首喊个数下限</span><input id="rFirstMin" type="number" min="2" max="6" step="1" value="2"></label>
             <label class="field"><span>首喊个数上限</span><input id="rFirstMax" type="number" min="2" max="10" step="1" value="6"></label>
           </div>
@@ -340,6 +340,7 @@
 
 <script src="../src/dice-rulesets.js"></script>
 <script src="../src/dice-engine.js"></script>
+<script src="../src/bots.js"></script>
 <script src="../src/dice-rules.js"></script>
 <script src="../src/context.js"></script>
 <script src="ranking.js"></script>

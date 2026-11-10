@@ -13,6 +13,7 @@
 'use strict';
 
 const E = root.DiceEngine, R = root.DiceRules, C = root.DiceContext, RS = root.DiceRulesets, RK = root.ArenaRanking;
+const BOT = root.DiceBots;   // 内置机器人（与 CLI / 测试共用同一份实现）
 const doc = typeof document !== 'undefined' ? document : null;
 const $ = id => doc.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -40,7 +41,7 @@ const BUILTIN = [
   { id:'bl-kimi',    alias:'Kimi K3.1 Pro', base:GW, model:'kimi-k3.1-pro',       color:'#ff7fa8', note:'示例 · OpenAI 兼容端点' },
 ];
 const DEFAULT_SETTINGS = {
-  target:10, speed:400, variant:'probe', coach:false, summary:true, god:false, strict:true, maxRounds:60,
+  target:10, speed:400, variant:'plain', summary:true, god:false, strict:true, maxRounds:60,
   defaultMaxTokens:8192,   // 只是「新建模型 / 配置缺项」时的缺省；每个模型自己的预算始终独立可改
   defaultEffort:'medium',  // 同上：新建模型 / 配置缺项时的缺省思考强度（off/low/medium/high）
   theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
@@ -122,6 +123,22 @@ function allRules(){ return RS.allRules(state.settings.ruleSets); }
 function effortLabel(e){ return { off:'关闭', low:'轻度', medium:'中度', high:'深度', xhigh:'极限' }[normalizeEffort(e)] || '关闭'; }
 function hostOf(base){ return String(base || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
 function presetById(id){ return state.presets.find(p => p.id === id) || null; }
+
+/* ---------- 内置机器人席位 ----------
+ * 机器人不是「模型预设」——它不连接口，直接在本地算。
+ * 席位里用 'bot:<spec>' 表示，spec 取自 bots.js 的 BOTS 注册表（加新机器人只加一条）。
+ */
+const BOT_PREFIX = 'bot:';
+function isBotId(id){ return String(id || '').indexOf(BOT_PREFIX) === 0; }
+function botSeat(id){
+  const spec = String(id).slice(BOT_PREFIX.length);
+  const meta = BOT && BOT.BOTS ? BOT.BOTS[spec] : null;
+  if (!meta) return null;
+  return { id, alias:meta.label, base:'bot', model:spec, apiKey:'',
+           maxTokens:0, temperature:0, effort:'off', color:'#7ba7ff',
+           note:meta.desc, kind:'bot', bot:spec };
+}
+function playerById(id){ return isBotId(id) ? botSeat(id) : presetById(id); }
 function seatLabel(w){ return w === 'A' ? '甲方' : '乙方'; }
 function actText(a){
   if (!a) return '—';
@@ -131,8 +148,8 @@ function actText(a){
   return '喊 ' + a.count + ' 个 ' + a.face + tag;
 }
 // 重写 / 截断续写提示里的行动词汇表：按当前规则集生成，不把新套的动作喂给经典套的模型。
-function actionHint(variant, rules, hasBid){
-  const RR = rules || activeRules(), mk = variant === 'probe';
+function actionHint(rules, hasBid){
+  const RR = rules || activeRules(), mk = false;
   const bid = mk ? '「行动：喊 X 个 Y」' : '「喊 X 个 Y」';
   const open = mk ? '「行动：开盅」' : '「开盅」';
   const parts = [bid];
@@ -186,7 +203,7 @@ async function loadStore(){
     state.storage = 'builtin';
     await saveStore();
   }
-  for (const w of ['A','B']) if (!presetById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
+  for (const w of ['A','B']) if (!playerById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
   if (state.seat.A === state.seat.B && state.presets[1]) state.seat.B = state.presets[1].id;
 }
 function renderStorage(){
@@ -228,6 +245,7 @@ function renderColors(){
   }
 }
 function openEditor(id){
+  if (isBotId(id)) { $('saveHint').textContent = '内置机器人不可编辑（本地代码实现，见 src/bots.js）'; return; }
   const p = id ? presetById(id) : null;
   state.editingId = p ? p.id : null;
   $('editorSec').hidden = false;
@@ -325,7 +343,7 @@ function importPresets(file){
       state.presets = j.presets.map(p => normalizePreset(p, (j.settings || {}).defaultMaxTokens, (j.settings || {}).defaultEffort));
       state.settings = normalizeSettings(j.settings);
       state.seat = Object.assign({A:'',B:''}, j.seat || {});
-      for (const w of ['A','B']) if (!presetById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
+      for (const w of ['A','B']) if (!playerById(state.seat[w])) state.seat[w] = state.presets[0] ? state.presets[0].id : '';
       syncQuick(); bindSettingsValues(); renderPicks(); renderPresets(); saveStore();
       $('saveHint').textContent = '已导入 ' + state.presets.length + ' 个模型';
     } catch (e) { $('saveHint').textContent = '导入失败：' + String(e.message).slice(0,80); }
@@ -464,9 +482,20 @@ function renderPicks(){
     for (const p of state.presets) {
       const o = document.createElement('option'); o.value = p.id; o.textContent = p.alias + ' · ' + p.model; sel.appendChild(o);
     }
+    if (BOT && BOT.BOTS) {
+      const gp = document.createElement('optgroup'); gp.label = '内置机器人（本地计算）';
+      for (const spec of Object.keys(BOT.BOTS)) {
+        const o = document.createElement('option'); o.value = BOT_PREFIX + spec;
+        o.textContent = BOT.BOTS[spec].label + ' · 本地';
+        o.title = BOT.BOTS[spec].desc;
+        gp.appendChild(o);
+      }
+      sel.appendChild(gp);
+    }
     sel.value = cur || '';
-    const p = presetById(cur);
-    $('pickMeta' + w).textContent = p ? (hostOf(p.base) + ' · ' + p.maxTokens + ' tok') : '尚未选择';
+    const p = playerById(cur);
+    $('pickMeta' + w).textContent = !p ? '尚未选择'
+      : (p.kind === 'bot' ? '内置机器人 · 本地即时计算 · ' + p.note : hostOf(p.base) + ' · ' + p.maxTokens + ' tok');
     const esel = $('effPick' + w);
     if (esel) {
       const curEff = (state.settings.seatEffort && state.settings.seatEffort[w]) || 'auto';
@@ -484,10 +513,15 @@ function renderPicks(){
 function syncQuick(){
   $('qTarget').value = String(state.settings.target);
   $('qSpeed').value = String(state.settings.speed);
-  $('qVariant').value = state.settings.variant;
-  if ($('qRules')) $('qRules').value = state.settings.rules;
+  // 提示词臂下拉：按 context.js 的注册表生成，以后加新臂不用改这里
+  if ($('qVariant')) {
+    $('qVariant').innerHTML = Object.keys(C.ARMS).map(id =>
+      '<option value="' + id + '"' + (id === (state.settings.variant || C.ARM_DEFAULT) ? ' selected' : '') + '>'
+      + esc(C.ARMS[id].label || id) + '</option>').join('');
+  }
+    if ($('qRules')) $('qRules').value = state.settings.rules;
   const rr = activeRules();
-  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + rr.name + ' #' + RS.hash(rr) + ' · 臂 ' + state.settings.variant;
+  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + rr.name + ' #' + RS.hash(rr) + ' · 臂 ' + C.armOf(state.settings.variant).label;
 }
 /* ---------------- 外观：暗色 / 亮色 ---------------- */
 function currentTheme(){ return state.settings.theme === 'light' ? 'light' : 'dark'; }
@@ -616,9 +650,10 @@ function render(){
 
   for (const w of ['A','B']) {
     const p = state.players ? state.players[w] : null;
-    const seatPreset = presetById(state.seat[w]);
+    const seatPreset = playerById(state.seat[w]);
     $('name' + w).textContent = p ? p.alias : (seatPreset ? seatPreset.alias : '—');
-    $('sub' + w).textContent = p ? (p.model + ' · ' + hostOf(p.base)) : (seatPreset ? '等待开战' : '等待布阵');
+    $('sub' + w).textContent = p ? (p.kind === 'bot' ? '内置机器人 · 本地计算' : p.model + ' · ' + hostOf(p.base))
+      : (seatPreset ? (seatPreset.kind === 'bot' ? '内置机器人 · 本地计算' : '等待开战') : '等待布阵');
     const active = !!(r && !r.over && r.turn === w && state.started);
     $('fighter' + w).classList.toggle('active', active);
     const st = $('status' + w);
@@ -628,14 +663,15 @@ function render(){
     }
     else if (active) { st.textContent = state.busy ? '思考中' : '轮到它'; st.className = 'status-pill busy'; }
     else { st.textContent = '等待'; st.className = 'status-pill'; }
-    const pt = G ? G.points[w] : 0;
-    $('score' + w).textContent = pt > 0 ? '+' + pt : String(pt);
-    $('rail' + w).style.width = Math.min(100, Math.max(0, pt) / target * 100) + '%';
+    const hpNow = G ? G.hp[w] : (G ? 0 : target);
+    const hpCap = G ? G.hpMax : target;
+    $('score' + w).textContent = String(hpNow);
+    $('rail' + w).style.width = Math.min(100, Math.max(0, hpNow) / (hpCap || 1) * 100) + '%';
     $('lastText' + w).textContent = state.lastAct[w];
     renderDice(w, false);
   }
   const Rf = activeRules();
-  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + Rf.name + ' #' + RS.hash(Rf) + ' · 臂 ' + state.settings.variant;
+  $('footHash').textContent = '规则 / 解析 / 提示词同源 · ' + Rf.name + ' #' + RS.hash(Rf) + ' · 臂 ' + C.armOf(state.settings.variant).label;
 }
 
 /* ---------------- 控制台 ---------------- */
@@ -764,11 +800,11 @@ function renderStats(){
     statRow('解析歧义', av(A, s=>s.ambiguous), av(B, s=>s.ambiguous), '多候选', 'low'),
     statRow('开盅次数', av(A, s=>s.opens), av(B, s=>s.opens), '本方开盅', ''),
     statRow('开盅正确', A.opens ? A.opensCorrect+'/'+A.opens : '—', B.opens ? B.opensCorrect+'/'+B.opens : '—', '开盅者赢', 'high'),
-    statRow('劈（双向结算）', av(A, s=>s.slashes), av(B, s=>s.slashes), '±'+activeRules().slashStake+' 分', ''),
+    statRow('劈（双向结算）', av(A, s=>s.slashes), av(B, s=>s.slashes), '±'+activeRules().slashStake+' 血', ''),
     statRow('转斋 / 破斋', A.toZhai+' / '+A.breakZhai, B.toZhai+' / '+B.breakZhai, '状态切换', ''),
     statRow('无动作判负', av(A, s=>s.forfeits), av(B, s=>s.forfeits), 'strict 模式', 'low'),
     statRow('复盘篇数', av(A, s=>s.memos), av(B, s=>s.memos), '轮末复盘', ''),
-    statRow('积分', G ? (G.points.A>=0?'+':'')+G.points.A : '—', G ? (G.points.B>=0?'+':'')+G.points.B : '—', '当前比分', 'high'),
+    statRow('血量', G ? G.hp.A : '—', G ? G.hp.B : '—', '上限 ' + (G ? G.hpMax : state.settings.target), 'high'),
   ];
   $('panelStats').innerHTML =
       '<div class="stats-head">'
@@ -947,11 +983,35 @@ function userText(w, variant){
   if (ctx) u += '\n\n' + ctx;
   return u;
 }
+// 内置机器人：不等接口、不产生 tok，直接本地算一手。
+// 走的是和 LLM 完全相同的合法性校验与落子路径，所以对局记录 / 统计口径一致。
+function decideBot(w, label){
+  const G = state.G, r = G.round, p = state.players[w], inst = state.bots[w];
+  thinkStart(w, label);
+  thinkNote(w, p.alias + ' · 本地即时计算（不走接口）');
+  const t0 = Date.now();
+  let act = null, note = '';
+  try { act = inst ? inst.decide(G, w) : null; }
+  catch (e) { note = '机器人决策异常：' + String(e.message || e).slice(0, 120); }
+  const ms = Math.max(0, Date.now() - t0);
+  if (!act) note = note || '机器人没有给出动作';
+  else {
+    const why = R.checkLegal(r, act);
+    if (why) { note = '机器人给出的动作不合法（' + why + '），按开盅处理'; act = { type:'open', slash:false }; }
+  }
+  const txt = act ? actText(act) : '（无动作）';
+  thinkPush(w, 'content', txt);
+  thinkEnd(w, ms + 'ms · 本地 · 0 tok');
+  return { action:act, tries:1, ms, tokens:0, netRetries:0, truncated:0, ambiguous:false,
+           note, raw:p.alias + ' 本地决策 → ' + txt, reason:'', invalid:!act, bot:true };
+}
+
 async function decide(w, label){
   const G = state.G, r = G.round, p = state.players[w], variant = state.settings.variant;
+  if (p.kind === 'bot') return decideBot(w, label);
   const RR = activeRules();
-  const sys = C.buildSystem(G.roundTarget, { variant, coach:state.settings.coach, rules:RR });
-  let msgs = [{ role:'system', content:sys }, { role:'user', content:userText(w, variant) }];
+  const sys = C.buildSystem(G.hpMax, { variant, rules:RR });
+  let msgs = [{ role:'system', content:sys }, { role:'user', content:userText(w) }];
   let action = null, tries = 0, ms = 0, tokens = 0, netSum = 0, truncated = 0, ambiguous = false, note = '';
   const raws = [], reasons = [];
 
@@ -989,11 +1049,11 @@ async function decide(w, label){
       msgs = msgs.concat([
         { role:'assistant', content:out.raw },
         { role:'user', content:'上次你写的是「' + String(out.raw).slice(0,80) + '」，这一手执行不了：' + why
-            + '。请只回一行行动：' + actionHint(variant, RR, !!r.bid) + '。' },
+            + '。请只回一行行动：' + actionHint(RR, !!r.bid) + '。' },
       ]);
     } else {
       note = isCut ? '输出被截断，未拿到完整行动行' : '没看出要做什么';
-      const words = actionHint(variant, RR, !!r.bid);
+      const words = actionHint(RR, !!r.bid);
       const hint = isCut
         ? '你上一段回答被输出长度截断了。接着它原来的思路往下想完，立即做出决断，不要从头重来、不要只写分析。最后另起一行给出行动：' + words + '。'
         : '上次你写的是「' + String(out.raw).slice(0,80) + '」，我没看出你要做什么。请只回一行行动：' + words + '。';
@@ -1012,8 +1072,6 @@ async function decide(w, label){
 function settleForfeit(G, loser){
   const win = E.other(loser), r = G.round, R = E.rulesOf(r);
   const stake = R.stake, loserPays = R.openLoserLoses;   // 判负按普通开盅结算，不按劈
-  G.points[win] += stake;
-  if (loserPays) G.points[loser] -= stake;
   G.losses[loser]++; G.lastLoser = loser;
   r.over = true; r.revealed = true;
   const result = {
@@ -1023,7 +1081,7 @@ function settleForfeit(G, loser){
   };
   r.result = result;
   G.history.push(Object.assign({ no:r.no }, result));
-  if (G.points[win] >= G.roundTarget) { G.over = true; G.winner = win; }
+  E.settle(G, win, loser, stake, loserPays);   // 血量结算：与引擎同一口径
   return result;
 }
 function showReveal(res, forfeit){
@@ -1032,10 +1090,10 @@ function showReveal(res, forfeit){
   const detail = forfeit
     ? seatLabel(res.loser) + ' 三次未给出合法行动'
     : seatLabel(b.by) + ' 喊 ' + b.count + ' 个 ' + b.face + tag + ' · 全场实际 ' + res.actual + ' 个 · ' + (res.truth ? '够' : '不够');
-  const payTxt = res.loserPays === false ? ' · 输家不扣分' : ' / ' + seatLabel(res.loser) + ' −' + k;
+  const payTxt = res.loserPays === false ? ' · 赢家不回血' : ' / ' + seatLabel(res.loser) + ' −' + k;
   el.innerHTML = '<div class="rv-title">' + (forfeit ? '判 负' : res.slash ? '劈 · 开 盅' : '开 盅') + '</div>'
     + '<div class="rv-detail">' + esc(detail) + (res.slash ? ' · 劈：双方 ±' + k : '') + '</div>'
-    + '<div class="rv-winner">本轮 <b>' + seatLabel(res.winner) + '</b> +' + k + payTxt + '</div>';
+    + '<div class="rv-winner">本轮 <b>' + seatLabel(res.winner) + '</b> +' + k + ' 血' + payTxt + '</div>';
   el.hidden = false;
 }
 function cleanSum(t){
@@ -1061,8 +1119,8 @@ function factLine(h, w){
   const who = x => (x === w ? '你' : '对手');
   const k = h.stake || 1;
   const pay = h.loserPays === false
-    ? who(h.winner) + ' +' + k + '，输家（' + who(h.loser) + '）不扣分。'
-    : who(h.winner) + ' +' + k + ' / ' + who(h.loser) + ' −' + k + '。';
+    ? who(h.loser) + ' −' + k + ' 点血（' + who(h.winner) + ' 不回血）。'
+    : who(h.winner) + ' +' + k + ' 点血 / ' + who(h.loser) + ' −' + k + ' 点血。';
   if (h.forfeit) return '  第' + h.no + '轮结算：' + who(h.loser) + '未能给出合法行动，判负 → ' + pay;
   const tag = h.bid.mode === 'toZhai' ? '（转斋）' : h.bid.mode === 'breakZhai' ? '（破斋）' : (h.zhai ? '（斋）' : '');
   const wild = !h.zhai && h.bid.face !== 1 && h.wild ? '（含万能1 ' + h.wild + ' 颗）' : '';
@@ -1150,6 +1208,7 @@ async function requestSummary(w, msgs, tag){
 async function summarizeRound(res){
   const roundNo = state.G.roundNo;
   const jobs = ['A','B'].map(async w => {
+    if (state.players[w] && state.players[w].kind === 'bot') return { w, text:'（内置机器人不做复盘。）' };
     const msgs = summaryMessages(state, w, res, state.settings.variant, null, { budget:state.settings.ctxBudget });
     const text = await requestSummary(w, msgs, 'summary') || '（本轮未形成复盘。）';
     return { w, text };
@@ -1162,8 +1221,8 @@ async function summarizeRound(res){
 }
 async function afterOpen(res, forfeit){
   const G = state.G, b = res.bid, k = res.stake || 1;
-  const delta = ' +' + k + (res.loserPays === false ? '（对方不扣分）' : ' / ' + seatLabel(res.loser) + ' −' + k);
-  const pointStr = '（积分 ' + G.points.A + ' : ' + G.points.B + '）';
+  const delta = ' +' + k + ' 血' + (res.loserPays === false ? '（对方不回血）' : ' / ' + seatLabel(res.loser) + ' −' + k + ' 血');
+  const pointStr = '（血量 ' + G.hp.A + ' : ' + G.hp.B + '）';
   const zt = b.mode === 'toZhai' ? '（转斋）' : b.mode === 'breakZhai' ? '（破斋）' : (res.zhai ? '（斋）' : '');
   if (forfeit) {
     addLog('rs', '判负结算 → ' + seatLabel(res.winner) + delta + pointStr);
@@ -1187,8 +1246,8 @@ async function afterOpen(res, forfeit){
   await sleep(Math.max(500, Math.min(1600, state.settings.speed || 400)));
   $('reveal').hidden = true;
   // 每一轮（含最后一轮）都做轮末复盘，口径一致；复盘只留在本局上下文与复盘面板，不带入下一局。
-  if (state.settings.summary) {
-    addLog('muted', '第 ' + G.roundNo + ' 轮结束，双方复盘总结中…');
+  if (state.settings.summary && ['A','B'].some(x => state.players[x].kind !== 'bot')) {
+    addLog('muted', '第 ' + G.roundNo + ' 轮结束，复盘总结中…');
     flash('轮末复盘中…');
     await summarizeRound(res);
     flash('准备就绪');
@@ -1198,7 +1257,7 @@ async function afterOpen(res, forfeit){
 }
 async function finishMatch(){
   state.running = false;
-  const w = state.G.winner, score = state.G.points.A + ' : ' + state.G.points.B;
+  const w = state.G.winner, score = state.G.hp.A + ' : ' + state.G.hp.B;
   setState('对局结束', (w ? seatLabel(w) + ' 获胜' : '平局') + ' · ' + score, 'done');
   flash('对局结束 · ' + (w ? seatLabel(w) + ' 获胜' : '平局'));
   syncButtons(); render();
@@ -1223,10 +1282,10 @@ async function recordMatch(){
     t:Date.now(), run_id:state.runId, gameNo:state.gameNo, source:'arena',
     seats:{ A:snapSeat(state.players.A), B:snapSeat(state.players.B) },
     ruleset_hash:RS.hash(G.rules),
-    prompt_hash:RK.hashTexts(C.promptTexts(state.settings.variant, G.rules)),
+    prompt_hash:RK.hashTexts(C.promptTexts(G.rules, state.settings.variant)),
     variant:state.settings.variant, rules:{ id:G.rules.id, name:G.rules.name },
-    target:G.roundTarget, rounds:G.roundNo,
-    points:{ A:G.points.A, B:G.points.B },
+    hpMax:G.hpMax, rounds:G.roundNo,
+    hp:{ A:G.hp.A, B:G.hp.B },
     winner:G.winner || null, draw:!G.winner, capped:!!G.capped,
     stats:{ A:pickStats(state.stats.A), B:pickStats(state.stats.B) },
   };
@@ -1303,7 +1362,7 @@ async function renderRank(){
             + '<span class="h-t">' + rankTime(m.t) + '</span>'
             + '<span class="h-vs"><b class="' + (m.winner === 'A' ? 'h-win' : '') + '">' + esc(a.alias || a.model) + '</b>'
             +   ' <i>vs</i> <b class="' + (m.winner === 'B' ? 'h-win' : '') + '">' + esc(b.alias || b.model) + '</b></span>'
-            + '<span class="h-score">' + m.points.A + ' : ' + m.points.B + '</span>'
+            + '<span class="h-score">' + ((m.hp || m.points || {}).A ?? '—') + ' : ' + ((m.hp || m.points || {}).B ?? '—') + '</span>'
             + '<span class="h-res">' + (wn ? esc(wn) + ' 胜' : '平局') + (m.capped ? ' · 封顶' : '') + '</span>'
             + '<span class="h-meta">' + m.rounds + ' 轮 · ' + effortLabel(a.effort) + '/' + effortLabel(b.effort) + '</span>'
             + '</div>';
@@ -1328,12 +1387,12 @@ async function stepOnce(){
   const G = state.G;
   if (!G || G.over) return;
   if (!G.round || G.round.over) {
-    // 开盅只加分不扣分时双方都会爬分，势均力敌可能长期分不出胜负，给观战页一个硬上限
+    // 封顶硬上限：血量制下对局本来就会自然结束（归零），这里防病态长局
     if (G.roundNo >= (state.settings.maxRounds || 60)) {
-      const win = G.points.A === G.points.B ? null : (G.points.A > G.points.B ? 'A' : 'B');
+      const win = G.hp.A === G.hp.B ? null : (G.hp.A > G.hp.B ? 'A' : 'B');
       G.over = true; G.winner = win; G.capped = true;
-      addLog('rd', '达到最多 ' + (state.settings.maxRounds || 60) + ' 轮，按积分判定：'
-        + (win ? seatLabel(win) + ' 胜出' : '平局') + '（' + G.points.A + ' : ' + G.points.B + '）');
+      addLog('rd', '达到最多 ' + (state.settings.maxRounds || 60) + ' 轮，按剩余血量判定：'
+        + (win ? seatLabel(win) + ' 胜出' : '平局') + '（' + G.hp.A + ' : ' + G.hp.B + '）');
       await finishMatch(); return;
     }
     E.startRound(G);
@@ -1434,25 +1493,29 @@ function syncButtons(){
 
 /* ---------------- 开战 / 重新布阵 ---------------- */
 async function startMatch(){
-  const A = presetById(state.seat.A), B = presetById(state.seat.B);
-  if (!A || !B || !A.base || !A.model || !B.base || !B.model) {
-    flash('请先配置并选择双方模型');
-    $('saveHint').textContent = '左右双方都要有完整的 Base URL 与模型 ID';
+  const A = playerById(state.seat.A), B = playerById(state.seat.B);
+  const okSeat = p => !!p && (p.kind === 'bot' || (!!p.base && !!p.model));
+  if (!okSeat(A) || !okSeat(B)) {
+    flash('请先配置并选择双方模型或机器人');
+    $('saveHint').textContent = '左右双方都要选定模型（完整的 Base URL 与模型 ID）或内置机器人';
     openDrawer(); return;
   }
   // 预设是共享配置：开战时拍快照，本局的席位思考强度覆盖只作用于快照，不改存档。
   state.players = { A: Object.assign({}, A), B: Object.assign({}, B) };
+  // 机器人实例按局新建：random/reader 的随机数状态跟着这一局，不跨局漂移。
+  state.bots = { A:null, B:null };
   for (const w of ['A','B']) {
+    const p = state.players[w];
+    if (p.kind === 'bot') { state.bots[w] = BOT.makeBot(p.bot, E.mulberry32((Date.now() + (w === 'A' ? 1 : 2)) >>> 0)); continue; }
     const se = state.settings.seatEffort && state.settings.seatEffort[w];
-    if (se && se !== 'auto') state.players[w].effort = normalizeEffort(se);
+    if (se && se !== 'auto') p.effort = normalizeEffort(se);
   }
   state.settings.target = +$('qTarget').value;
   state.settings.speed = +$('qSpeed').value;
-  state.settings.variant = $('qVariant').value;
   if ($('qRules')) state.settings.rules = $('qRules').value;
   state.god = !!state.settings.god;
   // 开战时把规则集锁进局面：之后在设置里换套，本局的合法性 / 提示词 / 结算口径都不变。
-  state.G = E.newMatch({ roundTarget:state.settings.target,
+  state.G = E.newMatch({ hpMax:state.settings.target,
     firstBidder:Math.random() < .5 ? 'A' : 'B', rules:selectedRules() });
   state.runId = 'arena-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,6);
   state.gameNo++;
@@ -1464,9 +1527,13 @@ async function startMatch(){
   addLog('muted', '局内上下文：本局所有轮末复盘 + 所有逐手判断 + 所有亮牌事实全量可见（预算 ' + (state.settings.ctxBudget || 24000) + ' 字）；整局结束即清空，不带入下一局');
   const RR = state.G.rules;
   addLog('muted', '规则套：' + esc(RR.name) + '（#' + RS.hash(RR) + '）· ' + esc(RS.describe(RR)));
-  addLog('muted', '先到 +' + state.settings.target + ' 分者胜 · 提示词臂 ' + state.settings.variant
-    + ' · 预算 ' + A.maxTokens + ' / ' + B.maxTokens + ' tok'
-    + ' · 思考强度 ' + effortLabel(state.players.A.effort) + ' / ' + effortLabel(state.players.B.effort)
+  addLog('muted', '初始血量 ' + state.settings.target + ' 点（先归零者输）· 提示词臂 ' + C.armOf(state.settings.variant).label
+    + (A.kind === 'bot' || B.kind === 'bot'
+        ? ' · ' + [A, B].filter(x => x.kind === 'bot').map(x => x.alias).join(' / ') + ' 本地计算，不走接口'
+        : ' · 预算 ' + A.maxTokens + ' / ' + B.maxTokens + ' tok')
+    + (A.kind === 'bot' && B.kind === 'bot' ? ''
+        : ' · 思考强度 ' + (A.kind === 'bot' ? '（本地）' : effortLabel(state.players.A.effort))
+          + ' / ' + (B.kind === 'bot' ? '（本地）' : effortLabel(state.players.B.effort)))
     + (state.settings.summary ? ' · 双方复盘并行' : '') + ' · 最多 ' + (state.settings.maxRounds || 60) + ' 轮');
   $('setupBar').classList.add('locked');
   $('btnGod').classList.toggle('on', state.god);
@@ -1554,12 +1621,13 @@ function bindAll(){
     state.settings.ctxBudget = Math.min(200000, Math.max(2000, +e.target.value || DEFAULT_SETTINGS.ctxBudget));
     e.target.value = String(state.settings.ctxBudget); saveStore();
   };
-  for (const [id, key] of [['qTarget','target'],['qSpeed','speed'],['qVariant','variant']]) {
+  for (const [id, key] of [['qTarget','target'],['qSpeed','speed']]) {
     $(id).onchange = e => {
-      state.settings[key] = (key === 'variant') ? e.target.value : +e.target.value;
+      state.settings[key] = +e.target.value;
       syncQuick(); saveStore();
     };
   }
+  if ($('qVariant')) $('qVariant').onchange = e => { state.settings.variant = e.target.value; syncQuick(); saveStore(); };
   for (const id of ['qRules','sRules']) {
     if ($(id)) $(id).onchange = e => setActiveRules(e.target.value);
   }
@@ -1602,7 +1670,10 @@ async function init(){
 const ArenaCore = { normalizePreset, normalizeSettings, normalizeEffort, actText, actionHint,
   hostOf, seatLabel, newStats, selectedRules, activeRules, allRules, renderRules, readRuleForm,
   gameContextText, recallText, summaryMessages, factLine,
-  BUILTIN, DEFAULT_SETTINGS, EFFORTS };
+  BUILTIN, DEFAULT_SETTINGS, EFFORTS,
+  // 机器人席位（'bot:<spec>'）解析 + 对局驱动，供 Node 侧测试直接调用
+  BOT_PREFIX, isBotId, botSeat, playerById, decideBot,
+  state, startMatch, doReset, init };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaCore;
 else root.ArenaCore = ArenaCore;
 

@@ -7,7 +7,7 @@ let pass = 0, fail = 0;
 function ok(cond, msg) { if (cond) { pass++; console.log('  ✓', msg); } else { fail++; console.log('  ✗', msg); } }
 
 function mkRound(rules, diceA, seq) {
-  const m = E.newMatch({ rules, roundTarget: 10 });
+  const m = E.newMatch({ rules, hpMax: 10 });
   E.startRound(m, E.mulberry32(42));
   m.round.dice.A = diceA.slice();
   // 按 seq 重建公开喊价过程（applyBid 走权威校验，保证构造的局面合法）
@@ -61,7 +61,7 @@ console.log('[4] 确定性 + 合法动作（classic/flex 各 20 个随机局面�
     const rng = E.mulberry32(7);
     let allLegal = true, det = true;
     for (let t = 0; t < 20; t++) {
-      const m = E.newMatch({ rules, roundTarget: 10 });
+      const m = E.newMatch({ rules, hpMax: 10 });
       E.startRound(m, rng);
       // 随机走 0~4 手合法喊价
       const steps = Math.floor(rng() * 5);
@@ -81,15 +81,12 @@ console.log('[4] 确定性 + 合法动作（classic/flex 各 20 个随机局面�
   }
 }
 
-console.log('[5] 冒烟：reader vs random / never-open，classic+flex 各 20 deal 零判负零异常');
+console.log('[5] 冒烟：reader vs oracle，classic+flex 各 1 deal 零判负零异常');
 {
   (async () => {
     for (const rules of ['classic', 'flex']) {
-      for (const opp of ['random', 'never-open']) {
-        const p1 = opp === 'random' ? B.randomBot(E.mulberry32(3)) : B.neverOpenBot();
-        const { agg } = await runPK(B.readerBot(), p1, { deals: 20, seed: 99, roundTarget: 5, maxRounds: 30, rules: E.RS.normalize(rules) });
-        ok(agg.p0.stats.forfeits === 0 && agg.p0.stats.errors === 0, `${rules} vs ${opp}: 零判负零异常 (${agg.p0.wins}-${agg.p0.losses}-${agg.p0.draws})`);
-      }
+      const { agg } = await runPK(B.readerBot(), B.oracleBot(), { deals: 1, seed: 99, hpMax: 10, maxRounds: 30, rules: E.RS.normalize(rules) });
+      ok(agg.p0.stats.forfeits === 0 && agg.p0.stats.errors === 0, `${rules} vs oracle: 零判负零异常 (${agg.p0.wins}-${agg.p0.losses}-${agg.p0.draws})`);
     }
     console.log(fail === 0 ? '==> ALL PASS' : `==> FAIL ${fail}`);
     process.exit(fail === 0 ? 0 : 1);

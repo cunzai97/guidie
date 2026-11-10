@@ -23,7 +23,7 @@ const p0 = makeLLMPlayer({ name: 'stub0', baseUrl: 'http://x/v1', model: 'm', co
 const p1 = makeLLMPlayer({ name: 'stub1', baseUrl: 'http://x/v1', model: 'm', context: 'chat' }, log);
 
 (async () => {
-  const { games } = await runPK(p0, p1, { deals: 1, seed: 12345, roundTarget: 3, maxRounds: 30 });
+  const { games } = await runPK(p0, p1, { deals: 1, seed: 12345, hpMax: 10, maxRounds: 30 });
   console.log('games:', games.length, 'calls:', calls.length);
   // 跨局 reset 检查：第二局首个 call 应只有 system+user（turns=2）
   const firstOfGame2 = calls.find((c, i) => i > 0 && c.turns === 2 && calls[i - 1].turns > 2);

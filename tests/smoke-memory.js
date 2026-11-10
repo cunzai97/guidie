@@ -20,7 +20,7 @@ const p0 = makeLLMPlayer({ name: 'm0', baseUrl: 'http://x/v1', model: 'm', conte
 const p1 = makeLLMPlayer({ name: 'm1', baseUrl: 'http://x/v1', model: 'm', context: 'memory' }, () => {});
 
 (async () => {
-  const { games, agg } = await runPK(p0, p1, { deals: 1, seed: 12345, roundTarget: 3, maxRounds: 30 });
+  const { games, agg } = await runPK(p0, p1, { deals: 1, seed: 12345, hpMax: 10, maxRounds: 30 });
   const plays = captured.filter(c => !c.isSummary);
   const sums = captured.filter(c => c.isSummary);
   // 1 跨局 reset：第二局首个 play 应只有 system+user（turns=2，backbone 已清）

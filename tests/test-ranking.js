@@ -14,12 +14,16 @@ for (const s of ['', 'abc', '你好，鬼骰', 'a'.repeat(55), 'b'.repeat(56), '
 }
 console.log('[1] SHA-1 与 Node crypto 一致 ✓');
 
-// [2] prompt_hash 四臂与 runlog 完全一致（排名分组键不能和 run 清单漂移）
-for (const r of ['classic', 'flex']) for (const v of ['classic', 'probe']) {
+// [2] prompt_hash 与 runlog 完全一致（排名分组键不能和 run 清单漂移）；臂从注册表取，加新臂自动纳入
+for (const r of ['classic', 'flex']) for (const v of Object.keys(C.ARMS)) {
   const rules = RS.normalize(r);
-  assert.strictEqual(RK.hashTexts(C.promptTexts(v, rules)), RL.promptHash(v, rules), r + '/' + v);
+  assert.strictEqual(RK.hashTexts(C.promptTexts(rules, v)), RL.promptHash(v, rules), r + '/' + v);
 }
-console.log('[2] prompt_hash 四臂与 runlog 一致 ✓');
+for (const r of ['classic', 'flex']) {
+  const rules = RS.normalize(r);
+  assert.strictEqual(RL.promptHash(null, rules), RL.promptHash(C.ARM_DEFAULT, rules), r + '/默认臂=注册表默认');
+}
+console.log('[2] prompt_hash 与 runlog 一致（臂：' + Object.keys(C.ARMS).join(',') + '）✓');
 
 // [3] 同分对手：赢 +16 / 输 −16（K=32, E=0.5）
 const seat = (id, model, effort) => ({ id, alias: model, model, base: 'http://x/v1', effort: effort || 'medium' });

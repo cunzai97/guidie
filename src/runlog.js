@@ -36,12 +36,9 @@ function codeHash() {
 // 静态提示词模板指纹：只覆盖写进 system / 复盘提示的固定文本，按 (臂, 规则集) 取。
 // 经典套的文本顺序与旧版完全一致，历史 run 的指纹仍可对照；规则集一变指纹必变，
 // 避免把不同规则下的胜负混进同一组 A/B。
-function promptHash(variant = 'classic', rules) {
+function promptHash(variant, rules) {
   const C = require('./context.js');
-  const texts = (typeof C.promptTexts === 'function')
-    ? C.promptTexts(variant, rules)
-    : ((C.PROMPT_TEXTS || {})[variant] || C.PROMPT_TEXTS.classic);
-  return sha1Text(texts.join('\n\0\n'));
+  return sha1Text(C.promptTexts(rules, variant).join('\n\0\n'));
 }
 function rulesHash(rules) { return require('./dice-rulesets.js').hash(rules || 'classic'); }
 

@@ -33,140 +33,72 @@ const RULES_TPL = `大话骰规则（两人对决）：
 - 轮到你时，你可以喊价，也可以不喊而改为"开盅"。开盅就是质疑此刻全场最新的那一手喊价（也就是当前最高价），本轮随即结束、双方亮牌结算。
 - 被质疑、被检验的只有"开盅前最近的一手"，更早的喊价一概不参与结算。轮到你时，那一手是对手刚喊的；但只要你抬出一手新价，最新一手就换成你喊的——此后对手开盅，被检验的就是你这一手，输赢也按你这一手算。
 - 开盅结算：亮出全场 10 颗，只数被质疑那一手喊的"n 个 m"里点数 m 的个数（未斋时 1 也算 m，双方都算）。够 n 个或更多 → 喊价成立，开盅者输、喊那一手的人赢；不足 n 个 → 喊价不成立，喊那一手的人（被开者）输、开盅者赢。
-- 每轮结算采用双向积分：赢家 +1 分、输家 −1 分（零和，双方积分同时变动）。率先达到 +{TARGET} 分者赢下整个对局。
+- 每轮结算血量：双方开局各有 {TARGET} 点血（上限也是 {TARGET} 点），谁的血先降到 0 谁输掉整局。开盅时输的一方 −1 点血，赢的一方 +1 点血（回满为止）。
 - 每轮由上一轮输的人先喊；第一轮由系统指定。`;
 
-// 竞争 framing（不是策略提示）：让模型知道这是零和对抗、对手也想赢。
-const FRAME = `你正在和另一个对手进行一场大话骰对决。你是其中一方，另一方是你的对手。
-你们各自都想让自己赢、让对方输：每赢一轮你 +1 分、对手 −1 分，你要率先拿到目标积分，同时阻止对手拿分。
-对手和你一样会观察、会推断、会诈唬——不要把对手当成固定的出题机器，你的每一次喊价也在向对手泄露情报。
-你的目标只有一个：赢下这场对局。这场对话会持续记录完整的局史和你自己的每一次判断，局势变化都会如实告诉你——落子前先回看对手的习惯有没有变、你之前的读牌哪些被证实、哪些被推翻，据此实时调整，而不是每回合从零开始。由你自主决定怎么打。`;
+/* ---------- 唯一的提示词臂 ----------
+ * 2026-11-10 定稿：只留三段——完整规则 + 「这局怎么赢」（入场券 / 进攻 / 防守）+ 一句收尾。
+ * 不写兵书、不给可执行结论、不预设具体招法。连败反思由 llm.js 拼在后面，不替代任何内容。
+ */
+const FRAME_PLAIN = '你在和对手一对一打大话骰。';
 
-// 可选的策略 coaching 臂（默认关闭，且只在 classic 臂生效）。
-const COACH = `桌上经验（仅供参考，不是必须照做）：
-- 喊价同时是情报和压力：真话假话掺着来，别让对手轻易读穿你手里有没有货。
-- 对手敢喊 n 个 m，要么它手里 m 多（加万能 1），要么在诈；用你自己手里的 m 去估它偏哪边。
-- 开盅前先想"对手为什么在这个位置喊这个数"，再决定开不开。`;
+// 这局怎么赢：只说规则里没有的东西——胜率由哪几条差距决定、什么打法会被读掉。
+// 不写具体招法（该喊什么、什么时候劈），留给模型自己从对手身上长出来。
+const HOWTO_PLAIN = `【这局怎么赢】
 
-// 基础"兵书"参考（默认就在系统提示里）：陈述这个游戏的道理与示例，但不告诉它该怎么用。
-const PLAY_REFERENCE = `博弈参考（这是一部大话骰的"兵书"，摆在你手边供查阅，不规定你怎么打——读不读、用哪条、什么时候用、怎么组合，全由你临场自己判断，没有哪一条是必须照做的）：
+1. 概率是入场券
+双方都会算，算得准不构成优势。
 
-【一轮怎么运转 · 举例】
-比如一轮可能这样推进：你首喊「2 个 3」，对手加数到「3 个 3」，你换更大点数喊「3 个 4」，对手转斋喊「3 个 1」（此后只能加 1 的个数），你觉得全场凑不够 3 个 1 就「开盅」——亮牌数不够则喊价者输、够则开盅者输。这只是一个示例，实际怎么喊由你定。
+2. 进攻
+对手的每一手价都在暴露它：手里有多少该点数、哪个价位有货、从哪一手开始骗。加价幅度、转斋时机、开盅时机也是情报。
 
-【核心：知己知彼（这是胜负的重心）】
-- 这游戏表面在比概率，真正的胜负多半在"谁更了解对手、谁更不让对手了解自己"。算得准只是入门，读得懂人才能赢。
-- 知彼：对手的每次喊价、加价幅度、开盅时机，都带着它的习惯和性格——偏不偏激、爱不爱诈、在什么位置会怂、会不会被你调动。谁更能从这些行为读出对手在想什么、下一步可能怎么走，谁就占先。
-- 知己：你要清楚自己手里有什么，更要清楚自己"正在向对手暴露什么"、有没有形成可被利用的规律、当前比分下该稳还是该搏。
-- 信息是拿来"藏"和"骗"的，不只是拿来算的。暴露得越少、误导得越准，对手就越难把你逼到墙角。
+3. 防守
+你的每一手同样在被反推。任何能总结成规律的习惯，都是免费情报：有货才喊最贵，固定比例的诈唬也是规律，只在没货时开盅等于自报没货。防守要花钱，通常就是放弃这一手的最优。`;
 
-【概率账（基础事实：这是所有人都能算的"地板"，不是优势）】
-- 单挑时对手那 5 颗你看不见。未斋时，任一非 1 点数 m，对手每颗有 1/3 概率能算作 m（掷出 m 或万能 1），平均补 5/3≈1.7 个；转斋后每颗只有 1/6 是 1，平均补 5/6≈0.8 个。
-- 全场某点数的大致期望 ≈ 你手里（含万能 1）该点数的个数 + 对手的期望贡献。喊价越接近/低于它越安全，越高于它越危险。
-- 现成的数（对手 5 颗、未斋、非 1 点）：能补 ≥1 个约 87%，≥2 个约 54%，≥3 个约 21%，≥4 个约 4.5%；换到 1（斋）：≥1 约 60%，≥2 约 20%，≥3 约 3.5%。
-- 这些数的用处是让你对"这手有多虚"心里有底；但你能算，对手也能算——只靠它，你只是棋盘上一个可被预测的对手。
+// 收尾一句：把整套说明压成一句话交给模型（对手同样知道这句）
+const MAXIM_PLAIN = '伪装自己，了解别人。';
+const SUMMARY_PLAIN = `【一句话】
+${MAXIM_PLAIN}对手也知道这一句。`;
+const CUE_PLAIN = '轮到你。';
+const FORMAT_PLAIN = `输出格式：先写想法（可长可短），最后一行只写行动：「喊 X 个 Y」／「喊 X 个 Y 斋」／「喊 X 个 Y 破斋」（破斋必须写出这两个字）／「开盅」／「劈」。不符合规则会要求重写。`;
+const FORMAT_PLAIN_CLASSIC = `输出格式：先写想法（可长可短），最后一行只写行动：「喊 X 个 Y」／「开盅」。`;
+const SUMMARY_INSTRUCTION_PLAIN = '本轮结束。写一段你要带到后续回合的复盘，内容和篇幅由你定。';
 
-【纯数学的陷阱（信息泄露）】
-- 如果每次都按"我有哪个点数就喊哪个"，等于把自己的牌型一条条报给对手；对手一旦看穿，就能顺水推舟把你抬到极限，逼你在自己都不敢确定的高位开盅，或直接按死。
-- 一个只按概率出牌的对手最容易被统计、被反向剥削。所以概率之上，还得有"故意不按概率"的那一层。
-- 偏离概率不是乱来，要服务于一个目的：让对手误判你、或诱导它犯错。
-
-【诈唬与混合策略】
-- 真话和假话掺着喊，让对手无法从你的叫牌稳定推断真假；均衡状态下，关键喊价里的"诈唬牌"大约占两三成。
-- 诈唬要让"看起来有支撑"（例如你确实有 1 或该点数的一部分），对手更难判断；纯硬喊的诈唬反而好读。
-- 同样手型，时而真喊时而诈，是降低可预测性的一种做法。
-
-【首喊、节奏与转斋（常见做法）】
-- 首喊限制个数 2~6、点数 2~6，不能首喊 1。开法可以稳健（从真有支撑的点数起步），也可以喊自己缺的点数去试探对手反应。
-- 个数可以一次跳加好几个（抬价更猛、承诺更重），也可以只把点数换大（不加数量地抬门槛）；转斋（喊 1）会把 1 从万能变硬点、并锁死后续只能加 1 的个数，是一步改变全局的棋。
-- 比分领先时偏保守、落后时承担更多风险，是常见的取舍。
-
-【读对手（知彼的具体读法）】
-- 对手喊某点数，往往暗示它手里有（或故意装作有）该点数加万能 1；它频繁在某一面精准加码，可能真有货；突然大幅跳叫，常是虚张或抢节奏。
-- 对手开盅的时机最能暴露它：爱在别人刚抬价就开、还是只在极高位才开；它开对/开错后的反应，也在告诉你它的判断方式。
-- 留意"被抬到极限"的信号：如果对手一路顺着你的强点加码，未必是它也有，可能是它在利用你暴露的牌把你顶死。
-- 这些都只是线索、不是证据；对手也可能故意做给你看。多轮行为比一手更能说明问题。
-
-【情报与心理】
-- 你喊出的每个数字，都是递给对手的一张牌：可能被相信，也可能被利用。
-- 领先求稳、落后搏命是常理，但对手也会预判你会这么做，于是"反其道"有时更好。
-- 这游戏比的不只是概率，还有谁更会读对方、谁更不被对方读懂。`;
-
-// 非经典套的兵书：只把写死「喊 1 转斋」的两处换成与规则集一致的中性描述，
-// 其余逐字沿用（避免规则文本互相打架，又不改动经典臂）。
-const PLAY_REFERENCE_FLEX = PLAY_REFERENCE
-  .replace('对手转斋喊「3 个 1」（此后只能加 1 的个数），你觉得全场凑不够 3 个 1 就「开盅」',
-           '对手转斋喊「2 个 4 斋」（此后 1 不再算万能、个数减半），你觉得全场凑不够就「开盅」或「劈」')
-  .replace('转斋（喊 1）会把 1 从万能变硬点、并锁死后续只能加 1 的个数，是一步改变全局的棋。',
-           '转斋把 1 从万能变硬点、并把个数取半，是一步能在绝境里搏一下的棋；对手也能用翻倍个数破斋把 1 变回万能。');
-
-const FORMAT = `输出格式（硬要求）：
-- 先写你的判断（两三句到一小段，别冗长）：对手这一手的意图、局势正往哪边走（比分与对手行动的变化）、你这手打算怎么打及理由。可以给出你对各种可能性的估计和依据，不必列正式算式。
-- 然后另起一行，只写一个行动：喊价写「喊 X 个 Y」（例如：喊 3 个 5），开盅写「开盅」。
-- 不要复述骰子、不要输出与行动无关的话。`;
-
-/* ---------- probe 臂：轻量引导，不给答案 ---------- */
-const FRAME_PROBE = `你正在和另一个对手进行一场大话骰对决。你是其中一方，另一方是你的对手。
-你们各自都想让自己赢、让对方输：每赢一轮你 +1 分、对手 −1 分，你要率先拿到目标积分，同时阻止对手拿分。
-对手看不见你的骰子，只能看见你的喊价；但它会记住你这局前面怎么打，并据此调整自己的判断。你也一样，只能看见它的喊价。
-所以你喊出的每一手，既是施压，也是在给它递信息。
-你的目标只有一个：赢下这场对局。由你自主决定怎么打。`;
-
-// 用户指定的决胜秘诀：保留原句、不解释、不展开成做法。
-const MAXIM = '知己知彼，百战不殆。';
-
-const GUIDE_PROBE = `【决胜秘诀】
-桌上只留一句老话：${MAXIM}
-至于这八个字在这局里指什么、怎么做到，由你自己去想。
-
-关于怎么打，下面只提醒两件事，不给任何固定打法。
-
-一、这局里有个躲不开的拉扯：喊得越贴近自己手里的牌，这一手越稳，但你的牌型也越容易被对手看出来；反过来，故意偏离手里的牌能让对手判断失准，风险却落在你自己身上。两头没有通用的最优解，什么时候偏、偏多少，得看这局的对手是什么样的人。
-
-二、落子前你可以问自己几个问题，问哪些、怎么答都由你定：
-  - 我这一手在向对手传递什么？如果照上一手的逻辑继续，它能不能预判我？
-  - 对手为什么在这个位置喊这个价，而不是另一个？它为什么现在开，或为什么一直不开？
-  - 我这套打法是不是已经连着用了几轮、被它摸清了？
-  - 我上一轮关于它的判断，是被证实了还是被推翻了？
-
-上面没有比例、阈值，也没有「该怎么做」的规矩。这个对手的习惯、以及你该不该改变打法，都要靠你自己从这局的喊价和亮牌里找出来。连续几轮用同一套判断却没检查过它是否还成立，通常不是好兆头。`;
-
-const FORMAT_PROBE = `输出格式（硬要求）：
-- 先按你自己的方式把这一手想清楚，想多长都行；不必按任何固定条目来，也不必把算式写给我看。
-- 最后另起一行，只写一个行动，用「行动：喊 X 个 Y」或「行动：开盅」。这一行必须是最后一行。`;
+/* ---------- 提示词臂注册表 ----------
+ * 现在只有一套（plain）。以后加新的一套：在这里加一个条目即可——
+ * buildSystem / 指纹 / CLI 的 --prompt / 竞技场的下拉框都从这张表读，不用改别处。
+ */
+const ARMS = {
+  plain: {
+    label: '这局怎么赢',
+    frame: FRAME_PLAIN,
+    guide: HOWTO_PLAIN + '\n\n' + SUMMARY_PLAIN,
+    format: FORMAT_PLAIN,
+    formatClassic: FORMAT_PLAIN_CLASSIC,
+    cue: CUE_PLAIN,
+    summaryInstruction: SUMMARY_INSTRUCTION_PLAIN,
+  },
+};
+const ARM_DEFAULT = 'plain';
+const armOf = id => ARMS[id] || ARMS[ARM_DEFAULT];
 
 // 非经典套：把可用的行动词汇补全（转斋 / 破斋 / 劈），仍是硬格式、不喂策略。
-const FORMAT_FLEX = `输出格式（硬要求）：
-- 先写你的判断（两三句到一小段，别冗长）：对手这一手的意图、局势正往哪边走（比分与对手行动的变化）、你这手打算怎么打及理由。可以给出你对各种可能性的估计和依据，不必列正式算式。
-- 然后另起一行，只写一个行动：普通喊价写「喊 X 个 Y」；转斋写「喊 X 个 Y 斋」；破斋写「喊 X 个 Y 破斋」；开盅写「开盅」；劈写「劈」。
-- 不要复述骰子、不要输出与行动无关的话。`;
-const FORMAT_FLEX_PROBE = `输出格式（硬要求）：
-- 先按你自己的方式把这一手想清楚，想多长都行；不必按任何固定条目来，也不必把算式写给我看。
-- 最后另起一行，只写一个行动：「行动：喊 X 个 Y」／「行动：喊 X 个 Y 斋」／「行动：喊 X 个 Y 破斋」／「行动：开盅」／「行动：劈」。这一行必须是最后一行。`;
 
-const SUMMARY_INSTRUCTION_PROBE = `本轮的全部信息已在上面摊开。写一段带到后续回合的复盘吧；写什么、按什么顺序写、要不要改打法，都由你自己决定，这里不设必须回答的条目，也不检查你写了哪几条。
-
-只把那句老话再留给你：${MAXIM}
-如果想找点落点，也可以顺手想想：这一轮你对对手的读牌，哪些还站得住、哪些该翻了；这套打法是不是已经被它摸清。想不想、想多深都随你。
-
-篇幅不必长，400 字以内够用。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束后这一切全部清空，不会带到下一局。`;
-
-const CUE_PROBE = '现在轮到你：给出这一手的决断。';
 
 function buildSystem(target, opts = {}) {
   const R = rulesOf(opts);
   const flex = R.zhaiMode === 'half' || R.slash;
-  const rules = rulesTextFor(R).replace('{TARGET}', String(target));
-  if (opts.variant === 'probe') {
-    let s = FRAME_PROBE + '\n\n' + rules + '\n\n' + GUIDE_PROBE;
-    s += '\n\n' + (flex ? FORMAT_FLEX_PROBE : FORMAT_PROBE);
-    return s;
+  const arm = armOf(opts.variant);
+  const rules = rulesTextFor(R).split('{TARGET}').join(String(target));   // 规则文本里可能出现多次，必须全替换
+  let out = arm.frame + '\n\n' + rules;
+  out += '\n\n' + arm.guide;
+  // 连败反思：整段拼在「一句话」之后、输出格式之前——不替代规则，也不替代这一套提示词本身。
+  if (opts.reflection && opts.reflection.text) {
+    out += '\n\n【连败后的自省】连输 ' + (opts.reflection.streak || 0) + ' 轮之后，你自己写下了下面这段；它和上面的内容并存，照着它调整：\n'
+      + opts.reflection.text;
   }
-  let s = FRAME + '\n\n' + rules;
-  s += '\n\n' + (flex ? PLAY_REFERENCE_FLEX : PLAY_REFERENCE);
-  if (opts.coach) s += '\n\n' + COACH;
-  s += '\n\n' + (flex ? FORMAT_FLEX : FORMAT);
-  return s;
+  out += '\n\n' + (flex ? arm.format : arm.formatClassic);
+  return out;
 }
 
 // 喊价序列的标记：经典套只有「喊 1 = 斋」；新套按每一手记录的状态标注。
@@ -176,16 +108,16 @@ function seqTag(s, R) {
   if (s.mode === 'breakZhai') return '（破斋）';
   return s.zhai ? '（斋）' : '';
 }
-// 结算积分的单句渲染：开盅可能只给赢家加分（openLoserLoses=false），劈与经典套双向。
-// 输家不扣分时也要点名输家是谁，否则「够→开盅方输」的因果反馈会被读丢。
+// 结算的单句渲染：开盅可能只有输家掉血（openLoserLoses=false），劈与经典套双向（赢家回血）。
+// 赢家不回血时也要点名输家是谁，否则「够→开盅方输」的因果反馈会被读丢。
 function payClause(h, me, R) {
   const k = h.stake || R.stake;
   return h.loserPays === false
-    ? `${me(h.winner)} +${k}，输家（${me(h.loser)}）不扣分`
-    : `${me(h.winner)} +${k} / ${me(h.loser)} −${k}`;
+    ? `${me(h.loser)} −${k} 点血（${me(h.winner)} 不回血）`
+    : `${me(h.winner)} +${k} 点血 / ${me(h.loser)} −${k} 点血`;
 }
 function resultTail(h, me, R) {
-  if (R.zhaiMode === 'face1') return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}，${me(h.opener)}开盅，全场${h.bid.face}实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${me(h.winner)} +1 / ${me(h.loser)} −1。`;
+  if (R.zhaiMode === 'face1') return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}，${me(h.opener)}开盅，全场${h.bid.face}实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${me(h.winner)} +1 点血 / ${me(h.loser)} −1 点血。`;
   const act = h.slash ? '劈' : '开盅', k = h.stake || R.stake;
   const z = h.bid && h.bid.zhai ? '（斋）' : '';
   return `${me(h.bid.by)}喊 ${h.bid.count}个${h.bid.face}${z}，${me(h.opener)}${act}，全场实际有 ${h.actual} 个（${h.truth ? '够' : '不够'}）→ ${payClause(h, me, R)}。`;
@@ -217,33 +149,43 @@ function legalMenu(round, rules) {
     return lines.join('\n');
   }
   const lines = ['你现在有几个选择：'];
-  const openPay = R.openLoserLoses ? `赢家 +${R.stake} / 输家 −${R.stake}` : `赢家 +${R.stake}、输家不扣分`;
+  const openPay = R.openLoserLoses ? `输掉的一方 −${R.stake} 点血、赢的一方 +${R.stake} 点血` : `输掉的一方 −${R.stake} 点血、赢的一方不回血`;
   lines.push(R.slash
-    ? `  ① 开盅或劈（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}；劈赢家 +${R.slashStake} / 输家 −${R.slashStake}（只有劈会扣输家的分）`
+    ? `  ① 开盅或劈（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}；劈输的一方 −${R.slashStake} 点血、赢的一方 +${R.slashStake} 点血（只有劈会让赢家回血）`
     : `  ① 开盅（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}`);
   const raises = [];
-  const zc = E.zhaiCount(round), bc = E.breakCount(round);
-  if (!round.zhai && zc != null) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
-  if (round.zhai && bc != null) {
-    const bf = E.breakFaces(round);
-    if (bf && bf.length) {
-      const pre = round.preZhai;
-      const facesTxt = bf.length === 6 ? '任意点数' : bf.slice().sort((x, y) => E.ord(x) - E.ord(y)).join('/') + ' 任选';
-      raises.push(`破斋：喊 ${bc} 个 ${facesTxt}、写「破斋」——个数翻倍`
-        + (pre && bc === pre.count ? `，且点数必须大于斋前那一手的 ${pre.face}（破斋不能比斋前低）` : '')
-        + `；这一手起 1 恢复万能`);
-    } else if (bf && round.preZhai) {
-      raises.push(`本轮破不了斋：翻倍到 ${bc} 个也超不过斋前那一手（${round.preZhai.count} 个 ${round.preZhai.face}）`);
+  const zc = E.zhaiCount(round), bcMin = E.breakMinCount(round);
+  if (!round.zhai && zc != null && zc >= R.minCount) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
+  else if (!round.zhai && zc != null && zc < R.minCount) raises.push(`本轮不能转斋：取半只有 ${zc} 个，不足 ${R.minCount} 个`);
+  if (round.zhai && bcMin != null && bcMin <= R.maxCount) {
+    const pre = round.preZhai;
+    // 列出第一个能破的个数作例子；往上加个数都可以，只要整手比斋前高
+    let firstOk = null;
+    for (let c = bcMin; c <= R.maxCount && !firstOk; c++) {
+      const bf = E.breakFaces(round, c);
+      if (bf && bf.length) firstOk = { c, bf };
     }
+    if (firstOk) {
+      const facesTxt = firstOk.bf.length === 6 ? '任意点数' : firstOk.bf.slice().sort((x, y) => E.ord(x) - E.ord(y)).join('/') + ' 任选';
+      raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（到 10 个都行）`
+        + (pre ? `，且整手要严格大于斋前那一手（${pre.count} 个 ${pre.face}）` : '')
+        + `；这一手起 1 恢复万能。例：喊 ${firstOk.c} 个 ${facesTxt} 破斋`
+        + `——不写「破斋」就不算破斋，只是留在斋里的普通抬价`);
+    } else if (pre) {
+      raises.push(`本轮破不了斋：个数要到 ${bcMin} 个以上、又得严格超过斋前那一手（${pre.count} 个 ${pre.face}），凑不出来`);
+    }
+  } else if (round.zhai && bcMin != null) {
+    raises.push(`本轮破不了斋：个数要翻到 ${bcMin} 个才能破，超过全场 10 颗了`);
   }
   if (b.count < 10) raises.push('把个数加到 ' + (b.count + 1) + '~10 任选（可以一次跳加好几个），此时点数 1~6 任选'
     + (round.zhai ? '、仍留在斋状态' : '')
-    + (round.zhai && bc != null ? '；但 ' + bc + ' 个这一手固定算破斋' : ''));
+    + (round.zhai && bcMin != null && bcMin <= R.maxCount
+        ? '；个数到 ' + bcMin + ' 个以上时，想破斋就写明「破斋」，不写仍留在斋里（1 仍不万能）' : ''));
   if (!(round.zhai && R.lockFace)) {
     const higher = E.FACE_ORDER.filter(f => E.ord(f) > E.ord(b.face));
     if (higher.length) raises.push('个数保持 ' + b.count + ' 不变、只把点数换成更大的：' + higher.join('/') + ' 任选');
   }
-  if (round.zhai) raises.push('当前是斋状态：1 不算万能，只数真实点数；普通抬价写不写「斋」都可以（写了也按普通抬价处理）');
+  if (round.zhai) raises.push('当前是斋状态：1 不算万能，只数真实点数；普通抬价写不写「斋」都可以（写了也按普通抬价处理）。破斋必须写明「破斋」');
   lines.push(raises.length ? ('  ② 喊价：' + raises.join('；或者 ') + '。')
     : (R.slash ? '  ② 已无更高价可喊，只能开盅或劈。' : '  ② 已无更高价可喊，只能开盅。'));
   return lines.join('\n');
@@ -292,10 +234,9 @@ function buildUser(m, who, opts = {}) {
   const own = {};
   for (let f = 1; f <= 6; f++) own[f] = r.dice[who].filter(d => d === f).length;
   L.push(`你手里各点数：1×${own[1]}  2×${own[2]}  3×${own[3]}  4×${own[4]}  5×${own[5]}  6×${own[6]}（对手那 5 颗你看不到）`);
-  const diff = m.points[who] - m.points[opp];
-  const tag = diff > 0 ? `你领先 ${diff} 分` : diff < 0 ? `你落后 ${-diff} 分` : '双方持平';
-  const fmtPt = x => (x > 0 ? '+' + x : String(x));
-  L.push(`积分：你 ${fmtPt(m.points[who])} 分，对手 ${fmtPt(m.points[opp])} 分，先到 +${m.roundTarget} 分者赢（${tag}）。`);
+  const diff = m.hp[who] - m.hp[opp];
+  const tag = diff > 0 ? `你的血比对手多 ${diff} 点` : diff < 0 ? `你的血比对手少 ${-diff} 点` : '双方血量相同';
+  L.push(`血量：你 ${m.hp[who]} 点，对手 ${m.hp[opp]} 点（上限 ${m.hpMax} 点），谁的血先降到 0 谁输掉整局（${tag}）。`);
 
   const mom = momentum(m, who, histLimit === Infinity ? Infinity : undefined);
   if (mom) { L.push(''); L.push(mom); }
@@ -320,8 +261,9 @@ function buildUser(m, who, opts = {}) {
     for (const e of memo) {
       const h = m.history.find(x => x.no === e.round);
       const kk = h ? (h.stake || R.stake) : 1;
-      const outcome = h ? (h.winner === who ? '该轮你 +' + kk
-        : (h.loserPays === false ? '该轮你输、未扣分' : '该轮你 −' + kk)) : '该轮进行中';
+      const outcome = h ? (h.winner === who
+        ? (h.loserPays === false ? '该轮你赢、血量不变' : '该轮你 +' + kk + ' 点血')
+        : '该轮你 −' + kk + ' 点血') : '该轮进行中';
       const j = (e.judgment || '').slice(0, 160);
       L.push(`  第${e.round}轮你判断：${j}${j.length >= 160 ? '…' : ''} → 你${e.action || ''} → ${outcome}。`);
     }
@@ -343,7 +285,7 @@ function buildUser(m, who, opts = {}) {
   L.push('');
   L.push(legalMenu(r, R));
   L.push('');
-  L.push(opts.variant === 'probe' ? CUE_PROBE : '现在轮到你：先结合局势走势和你之前的判断写分析（对手意图、局势往哪边走、你这手该怎么打及理由），再另起一行给出你的行动。');
+  L.push(armOf(opts.variant).cue);
   return L.join('\n');
 }
 
@@ -375,14 +317,14 @@ function buildTurn(m, who, cursor, opts = {}) {
     const own = {};
     for (let f = 1; f <= 6; f++) own[f] = r.dice[who].filter(d => d === f).length;
     L.push(`你手里各点数：1×${own[1]}  2×${own[2]}  3×${own[3]}  4×${own[4]}  5×${own[5]}  6×${own[6]}（对手那 5 颗你看不到）`);
-    const diff = m.points[who] - m.points[opp];
-    const tag = diff > 0 ? `你领先 ${diff} 分` : diff < 0 ? `你落后 ${-diff} 分` : '双方持平';
-    L.push(`积分：你 ${fmtPt(m.points[who])} 分，对手 ${fmtPt(m.points[opp])} 分，先到 +${m.roundTarget} 分者赢（${tag}）。`);
+    const diff = m.hp[who] - m.hp[opp];
+    const tag = diff > 0 ? `你的血比对手多 ${diff} 点` : diff < 0 ? `你的血比对手少 ${-diff} 点` : '双方血量相同';
+    L.push(`血量：你 ${m.hp[who]} 点，对手 ${m.hp[opp]} 点（上限 ${m.hpMax} 点），谁的血先降到 0 谁输掉整局（${tag}）。`);
     L.push(m.firstBidder === who || (m.lastLoser === who) ? '本轮由你先喊。' : '本轮对手先喊。');
   } else {
     L.push(`【第 ${m.roundNo} 轮 · 又轮到你】`);
     L.push('你的骰子仍是：' + r.dice[who].join(' '));
-    L.push(`积分：你 ${fmtPt(m.points[who])} / 对手 ${fmtPt(m.points[opp])}。`);
+    L.push(`血量：你 ${m.hp[who]} / 对手 ${m.hp[opp]}。`);
   }
 
   const startAt = newRound ? 0 : (cursor.seqAt || 0);
@@ -402,15 +344,11 @@ function buildTurn(m, who, cursor, opts = {}) {
   L.push('');
   L.push(legalMenu(r, R));
   L.push('');
-  L.push(opts.variant === 'probe' ? CUE_PROBE : (opts.noHistory
-    ? '轮到你：结合你的记忆笔记和当前局面，先写分析（对手意图、局势往哪边走、你这手怎么打及理由），再另起一行给出行动。'
-    : '轮到你：结合对话里的局势变化和你自己之前的判断，先写分析（对手意图、局势往哪边走、你这手怎么打及理由），再另起一行给出行动。'));
+  L.push(armOf(opts.variant).cue);
 
   const next = { roundNo: m.roundNo, histLen: m.history.length, seqAt: r.seq.length ? r.seq[r.seq.length - 1].at : 0 };
   return { text: L.join('\n'), next };
 }
-
-const SUMMARY_INSTRUCTION = `本轮的全部信息已在上面摊开。请你自己写一段复盘总结，带到后续回合：要总结什么、怎么反思、觉得哪些对后面有用，都由你自己决定，我不预设方向。这段总结会留在本局后续每一回合的上下文里供你回看；本局每一手的判断与落子也一直摊在上下文里，直到整局结束。整局结束后这一切全部清空，不会带到下一局。`;
 
 function buildSummaryPrompt(m, who, result, opts = {}) {
   const R = rulesOf(opts.rules || m.rules);
@@ -440,7 +378,7 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
     if (R.zhaiMode === 'face1') {
       // 经典套：逐字复现旧结算行（上一轮刚补过第一人称胜负标注）
       const wildNote = result.bid.face !== 1 && result.wild ? `（其中 ${result.wild} 个来自万能1）` : '';
-      L.push(`结算：${me(result.bid.by)}喊 ${result.bid.count}个${result.bid.face}，${me(result.opener)}开盅，全场${result.bid.face}实际有 ${result.actual} 个${wildNote}（${result.truth ? '够' : '不够'}）→ ${me(result.winner)} +1 / ${me(result.loser)} −1。本轮${result.winner === who ? '你赢' : '你输'}。`);
+      L.push(`结算：${me(result.bid.by)}喊 ${result.bid.count}个${result.bid.face}，${me(result.opener)}开盅，全场${result.bid.face}实际有 ${result.actual} 个${wildNote}（${result.truth ? '够' : '不够'}）→ ${me(result.winner)} +1 点血 / ${me(result.loser)} −1 点血。本轮${result.winner === who ? '你赢' : '你输'}。`);
     } else {
       const k = result.stake || R.stake;
       const wildNote = !result.zhai && result.bid.face !== 1 && result.wild ? `（其中 ${result.wild} 个来自万能1）` : '';
@@ -449,7 +387,7 @@ function buildSummaryPrompt(m, who, result, opts = {}) {
     }
   }
   L.push('');
-  L.push(opts.variant === 'probe' ? SUMMARY_INSTRUCTION_PROBE : SUMMARY_INSTRUCTION);
+  L.push(armOf(opts.variant).summaryInstruction);
   return L.join('\n');
 }
 
@@ -463,34 +401,24 @@ const { parseAction, checkLegal, isPromptEcho, extractJudgment } = RUL;
 
 // 各臂写进 system / 复盘提示的固定文本，供 runlog.promptHash 按臂取指纹。
 // 经典套返回固定数组，保证同一版本文本的 prompt_hash 稳定；规则集变化时由 promptTexts 生成新数组。
-const PROMPT_TEXTS = {
-  classic: [RULES_TPL, FRAME, COACH, PLAY_REFERENCE, FORMAT, SUMMARY_INSTRUCTION],
-  probe: [RULES_TPL, FRAME_PROBE, GUIDE_PROBE, FORMAT_PROBE, SUMMARY_INSTRUCTION_PROBE],
-};
-
-// 指纹用：按 (臂, 规则集) 取完整文本数组。内置 classic 直接复用上面的固定数组。
-function promptTexts(variant, rules) {
-  const R = rulesOf(rules);
-  const base = PROMPT_TEXTS[variant] || PROMPT_TEXTS.classic;
-  // 只有内置 classic 才复用固定文本；自定义套（哪怕同为 face1）也必须按自己的参数取指纹。
-  if (R.builtin && R.id === 'classic') return base;
-  const isProbe = variant === 'probe';
+// 指纹用：现在只有一个臂，文本按规则集生成（规则文本变了指纹就变）。
+function promptTexts(rules, variant) {
+  const R = rulesOf(rules), arm = armOf(variant);
   return [
     rulesTextFor(R),
-    isProbe ? FRAME_PROBE : FRAME,
-    isProbe ? GUIDE_PROBE : (variant === 'classic' ? COACH + '\n\0\n' + PLAY_REFERENCE_FLEX : PLAY_REFERENCE_FLEX),
-    isProbe ? FORMAT_FLEX_PROBE : FORMAT_FLEX,
-    isProbe ? SUMMARY_INSTRUCTION_PROBE : SUMMARY_INSTRUCTION,
+    arm.frame,
+    arm.guide,
+    (R.zhaiMode === 'half' || R.slash) ? arm.format : arm.formatClassic,
+    arm.summaryInstruction,
   ];
 }
 
 const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, memoryMarker,
   legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts,
   extractJudgment, parseAction, checkLegal, isPromptEcho, ACTION_LINE_RE: RUL.ACTION_LINE_RE,
-  PROMPT_TEXTS, RULES_TPL, FRAME, COACH, PLAY_REFERENCE, PLAY_REFERENCE_FLEX, FORMAT,
-  FORMAT_FLEX, FORMAT_FLEX_PROBE, SUMMARY_INSTRUCTION,
-  FRAME_PROBE, GUIDE_PROBE, FORMAT_PROBE, SUMMARY_INSTRUCTION_PROBE,
-  CUE_PROBE, MAXIM };
+  RULES_TPL,
+  FRAME_PLAIN, HOWTO_PLAIN, SUMMARY_PLAIN, FORMAT_PLAIN, FORMAT_PLAIN_CLASSIC, SUMMARY_INSTRUCTION_PLAIN, CUE_PLAIN, MAXIM_PLAIN,
+  ARMS, ARM_DEFAULT, armOf };
 if (NODE) module.exports = API;
 else root.DiceContext = API;
 })(typeof self !== 'undefined' ? self : globalThis);

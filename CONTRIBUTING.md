@@ -47,7 +47,7 @@ bash start.sh             # 一键起竞技场，默认 8899
 
 ### 4. 引擎持真值
 
-引擎（`src/dice-engine.js`）持有唯一真值：点数统计、积分、胜负。**LLM 不参与事实判定**。模型说自己有几个点，一律不信。
+引擎（`src/dice-engine.js`）持有唯一真值：点数统计、血量结算、胜负。**LLM 不参与事实判定**。模型说自己有几个点，一律不信。
 
 推论：任何「让 LLM 决定分数」的想法都要先想清楚它会不会让评测自证。
 
@@ -58,11 +58,11 @@ bash start.sh             # 一键起竞技场，默认 8899
 for f in src/*.js web/*.js tests/*.js; do node --check "$f"; done
 python3 -c "import ast; ast.parse(open('serve-dice.py',encoding='utf-8').read())"
 
-# 规则回归
-node tests/test-rules.js
+# 规则回归（7 个测试分别跑，每个只打一局）
+for t in test-rules test-oracle test-reader test-ranking test-echo-prune test-reflect test-arena-bots test-bots-legal; do node tests/$t.js; done
 
 # 无头冒烟（不需要真模型也能跑的部分）
-node src/pk.js --p0 threshold --p1 random --deals 10 --out runs/bot-check.jsonl
+node src/pk.js --p0 reader --p1 oracle --deals 10 --out runs/bot-check.jsonl
 ```
 
 新增判定逻辑时，请同步补 `tests/test-rules.js` 的对拍用例：枚举 (局面, 动作) 全集，比对「解析层的判定」与「引擎的权威集合」必须零差异。

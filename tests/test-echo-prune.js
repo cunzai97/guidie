@@ -25,7 +25,7 @@ function scenario(echoFirst, label) {
   };
   const p0 = makeLLMPlayer({ name: 'echoer', baseUrl: 'http://x/v1', model: 'echoer', context: 'chat' }, () => {});
   const p1 = makeLLMPlayer({ name: 'clean', baseUrl: 'http://x/v1', model: 'clean', context: 'chat' }, () => {});
-  return runPK(p0, p1, { deals: 1, seed: 12345, roundTarget: 3, maxRounds: 30 }).then(({ games, agg }) => {
+  return runPK(p0, p1, { deals: 1, seed: 12345, hpMax: 10, maxRounds: 30 }).then(({ games, agg }) => {
     // 不变量1：任何 assistant 内容都不以"【第"开头（原始回声从未入史，连临时副本里也被中性标记替换）
     const rawEchoInHistory = captured.some(c => c.msgs.some(m => m.role === 'assistant' && /^【第\s*\d+\s*轮开始】/.test(m.content.trim())));
     // 不变量2：echoer 的判负次数（场景A应0，场景B应1，绝不级联成整局）

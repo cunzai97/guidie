@@ -15,12 +15,10 @@ function applyForfeit(m, who) {
   const R = E.rulesOf(r);
   const k = R.stake, loserPays = R.openLoserLoses;
   r.result = { forfeit: true, loser, winner, dice: r.dice, stake: k, loserPays };
-  m.points[winner] += k;
-  if (loserPays) m.points[loser] -= k;
   m.losses[loser]++; m.lastLoser = loser;
   m.history.push({ no: r.no, bid: r.bid || { by: who, count: 0, face: 0 }, opener: winner, actual: 0, truth: false,
     loser, winner, forfeit: true, stake: k, loserPays });
-  if (m.points[winner] >= m.roundTarget) { m.over = true; m.winner = winner; }
+  E.settle(m, winner, loser, k, loserPays);   // 血量结算与开盅同口径
   return r.result;
 }
 
@@ -36,10 +34,10 @@ function newStats() {
 
 // 单局。players: {A:player, B:player}；rng 为种子 RNG。返回结果与双方过程指标。
 async function runMatch(players, rng, opts = {}) {
-  const target = opts.roundTarget || 3;
-  const maxRounds = opts.maxRounds || 30;        // 单局轮数封顶，到顶按当前积分判胜
+  const hpMax = opts.hpMax || opts.roundTarget || 10;
+  const maxRounds = opts.maxRounds || 30;        // 单局轮数封顶，到顶按剩余血量判胜
   const firstBidder = opts.firstBidder || 'A';
-  const m = E.newMatch({ roundTarget: target, firstBidder, rules: opts.rules || 'classic' });
+  const m = E.newMatch({ hpMax, firstBidder, rules: opts.rules || 'classic' });
   // 每局清空 LLM 玩家的持久对话，避免跨局串味（bot 无 reset 则跳过）
   if (players.A.reset) players.A.reset();
   if (players.B.reset) players.B.reset();
@@ -47,6 +45,8 @@ async function runMatch(players, rng, opts = {}) {
   const memos = { A: [], B: [] };                // 各模型自身思考历史，喂回上下文
   const events = [];
   const metaBase = opts.meta || {};             // { run_id, deal, swap, game } 由 runPK 注入
+  const reflectAfter = opts.reflectAfter || 0;  // 局内连输轮数阈值：输满 N 轮触发一次深度反思
+  const roundStreaks = { A: 0, B: 0 };
   let ungraded = false;
   let turns = 0;
   const ev = x => events.push({ ...metaBase, round: m.roundNo, step: turns || 0, ...x });
@@ -87,7 +87,7 @@ async function runMatch(players, rng, opts = {}) {
       if (action.type === 'error') {
         st.errors++; ungraded = true;
         ev({ round: r.no, who, kind: 'error', error: action.error });
-        return { ungraded, winner: null, points: m.points, losses: m.losses, stats, events, rounds: m.roundNo };
+        return { ungraded, winner: null, hp: m.hp, losses: m.losses, stats, events, rounds: m.roundNo };
       }
       if (action.type === 'forfeit') {
         st.forfeits++;
@@ -143,14 +143,29 @@ async function runMatch(players, rng, opts = {}) {
         }
       }
     }
+    // 局内连轮反思：连续输满 N 轮立即触发深度反思（反思取代此前轮末总结与系统提示策略段，下一轮起生效）
+    if (!m.over && reflectAfter > 0 && m.round.result) {
+      const rl = m.round.result;
+      for (const who of ['A', 'B']) {
+        if (rl.winner === who) { roundStreaks[who] = 0; continue; }
+        if (rl.loser !== who) continue;
+        roundStreaks[who]++;
+        const pl = players[who];
+        if (roundStreaks[who] % reflectAfter === 0 && pl.reflect) {
+          try { await pl.reflect({ streak: roundStreaks[who], history: m.history, seat: who, hpMax, game: metaBase.game, round: m.roundNo }); }
+          catch (e) { ev({ round: m.roundNo, who, kind: 'reflect-error', error: String(e).slice(0, 200) }); }
+        }
+      }
+    }
     if (!m.over && m.roundNo >= maxRounds) {
       m.over = true; m.capped = true;
-      m.winner = m.points.A === m.points.B ? null : (m.points.A > m.points.B ? 'A' : 'B');
+      m.winner = m.hp.A === m.hp.B ? null : (m.hp.A > m.hp.B ? 'A' : 'B');   // 封顶时血多的赢
     }
   }
-  // 封顶且积分持平 → 平局。以前 winner=null 会让这一局在 runPK 里静默消失（stats 却并入了）。
+  // 封顶且血量相同 → 平局。以前 winner=null 会让这一局在 runPK 里静默消失（stats 却并入了）。
   return { ungraded, winner: m.winner, draw: !!m.capped && m.winner === null,
-           capped: !!m.capped, points: m.points, losses: m.losses, stats, events, rounds: m.roundNo };
+           capped: !!m.capped, hp: m.hp, hpMax: m.hpMax, losses: m.losses, stats, events, rounds: m.roundNo,
+           history: m.history };   // 逐轮完整记录（双方骰子/喊价/结算），供连败反思使用，不落盘
 }
 
 // 复式赛：deals 个 seed，每个 seed 打两局（交换座位）。聚合到玩家身份。
@@ -162,6 +177,7 @@ async function runPK(player0, player1, opts = {}) {
     p1: { name: player1.name, wins: 0, losses: 0, draws: 0, ungraded: 0, stats: newStats() },
   };
   const games = [];
+  const reflectAfter = opts.reflectAfter || 0;   // >0 且玩家实现 reflect() 时：局内连续输满 N 轮触发深度反思
   for (let d = 0; d < deals; d++) {
     const seed = baseSeed + d;
     const firstBidder = (seed % 2 === 0) ? 'A' : 'B';
@@ -170,7 +186,7 @@ async function runPK(player0, player1, opts = {}) {
       const game = d * 2 + (swap ? 1 : 0);
       const meta = { run_id: opts.runId || null, deal: d, swap, game };
       const players = swap ? { A: player1, B: player0 } : { A: player0, B: player1 };
-      const res = await runMatch(players, E.mulberry32(seed), { roundTarget: opts.roundTarget, maxRounds: opts.maxRounds, firstBidder, meta, rules: opts.rules });
+      const res = await runMatch(players, E.mulberry32(seed), { hpMax: opts.hpMax || opts.roundTarget, maxRounds: opts.maxRounds, firstBidder, meta, rules: opts.rules, reflectAfter: opts.reflectAfter });
       const seatOf = { p0: swap ? 'B' : 'A', p1: swap ? 'A' : 'B' };
       for (const pk of ['p0', 'p1']) {
         const seat = seatOf[pk];
@@ -181,7 +197,7 @@ async function runPK(player0, player1, opts = {}) {
         else if (res.winner) agg[pk].losses++;
       }
       games.push({ ...meta, seed, winner: res.ungraded ? null : res.winner, draw: !!res.draw,
-                   capped: res.capped, seatOf, points: res.points, losses: res.losses,
+                   capped: res.capped, seatOf, hp: res.hp, hpMax: res.hpMax, losses: res.losses,
                    rounds: res.rounds, stats: res.stats, events: res.events });
       if (opts.onGame) opts.onGame(games[games.length - 1], d, swap);
     }

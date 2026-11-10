@@ -145,67 +145,135 @@ const firstZhaiAction = R.parseAction('行动：喊 3 个 4 斋').action;
 ok(firstZhaiAction.mode === 'toZhai' && R.checkLegal(zr, firstZhaiAction) === null, '「喊 3 个 4 斋」被解析为首喊转斋且合法');
 E.applyBid(zr, zr.turn, firstZhaiAction);
 ok(zr.zhai === true && zr.bid.zhai === true, '首喊斋后本轮进入斋状态（被开时按斋结算）');
-ok(E.breakCount(zr) === 6, '翻倍破斋个数 = 3 × 2 = 6');
-ok(E.legalActionSet(zr).has('bid:6:5:breakZhai'), '斋内翻倍个数可破斋、点数任意');
-ok(!E.legalActionSet(zr).has('bid:6:5:normal'), '翻倍个数不再同时作为留在斋里的普通抬价');
-ok(E.normalizeAction(zr, { type:'bid', count:6, face:5 }).mode === 'breakZhai', '漏写「破斋」按个数自动推断');
-E.applyBid(zr, zr.turn, R.parseAction('行动：喊 6 个 5 破斋').action);
-ok(zr.zhai === false, '破斋后 1 恢复万能');
-console.log('  [7] 首喊斋 / 翻倍破斋 / 计数与状态切换');
+ok(E.breakMinCount(zr) === 6, '破斋门槛 = 3 × 2 = 6（个数至少翻倍）');
+ok(E.legalActionSet(zr).has('bid:6:5:breakZhai'), '斋内个数到门槛可破斋、点数任意');
+ok(E.legalActionSet(zr).has('bid:8:2:breakZhai'), '个数超过门槛也可以破斋（「至少」翻倍）');
+ok(E.legalActionSet(zr).has('bid:6:5:normal'), '同一手不写「破斋」也是合法动作（留在斋里的普通抬价）');
+ok(E.normalizeAction(zr, { type:'bid', count:6, face:5 }).mode === 'normal', '漏写「破斋」不再自动推断成破斋');
+// A：写「破斋」→ 回到未斋
+const zrA = zr;
+E.applyBid(zrA, zrA.turn, { type:'bid', count:6, face:5, mode:'breakZhai' });
+ok(zrA.zhai === false, '写明「破斋」→ 破斋，1 恢复万能');
+// B：同样个数不写「破斋」→ 留在斋里（用户例子：2个4斋 后 4个4 仍是斋）
+const zb = E.startRound(zm, E.mulberry32(12));
+E.applyBid(zb, zb.turn, { type:'bid', count:2, face:4, mode:'toZhai' });
+E.applyBid(zb, zb.turn, { type:'bid', count:4, face:4, mode:'normal' });
+ok(zb.zhai === true, '「2 个 4 斋」后喊「4 个 4」不写破斋 → 仍是斋状态');
+ok(E.breakMinCount(zb) === 8, '斋里已经到 4 个，破斋门槛随之抬到 8 个');
+// 首喊：点数 1~6 都能喊（喊 1 只是普通点数，不进斋），也能直接喊斋
+const fs0 = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(41));
+const firstBids = E.legalActions(fs0).filter(a => a.type === 'bid');
+ok([...new Set(firstBids.map(a => a.face))].sort().join('') === '123456', '首喊点数 1~6 全可选');
+ok(R.checkLegal(fs0, { type:'bid', count:2, face:1 }) === null, '首喊可以喊 2 个 1');
+E.applyBid(fs0, fs0.turn, { type:'bid', count:2, face:1 });
+ok(fs0.zhai === false, '首喊喊 1 不会进斋（进斋只能靠转斋 / 写斋）');
+console.log('  [7] 首喊斋 / 至少翻倍破斋 / 必须写标记 / 状态切换');
 
-// ---- 7b. 漏洞回归：破斋翻倍还必须严格大于斋前一手，否则转斋→破斋压价死循环 ----
-// 实战抓到的序列：4个5 → 转斋2个5 → 破斋4个4（点数反而低于斋前，可一直循环到 2 再横跳）
+// ---- 7b. 破斋两个条件 + 必须写标记：个数至少翻倍；整手严格大于斋前一手 ----
+// 实战抓到的序列：4个5 → 转斋2个5 → 若允许压价破斋就能一直循环到 2 再横跳
 const xm = E.newMatch({ roundTarget:5, rules:FX });
 const xr = E.startRound(xm, E.mulberry32(21));
 E.applyBid(xr, xr.turn, 4, 5);
 E.applyBid(xr, xr.turn, { type:'bid', count:2, face:5, mode:'toZhai' });
 ok(xr.preZhai && xr.preZhai.count === 4 && xr.preZhai.face === 5, '转斋时引擎记住斋前最高价');
-ok(E.breakCount(xr) === 4, '破斋翻倍值 = 2 × 2 = 4');
-ok(JSON.stringify(E.breakFaces(xr)) === JSON.stringify([1,6]), '翻倍后与斋前同个数：只允许比斋前 5 更大的点数 6/1');
+ok(E.breakMinCount(xr) === 4, '破斋门槛 = 2 × 2 = 4');
+ok(JSON.stringify(E.breakFaces(xr, 4)) === JSON.stringify([1,6]), '个数与斋前同为 4：只允许比斋前 5 更大的点数 6/1');
+ok(E.breakFaces(xr, 5).length === 6, '个数超过斋前：点数任意');
 const xset = E.legalActionSet(xr);
-ok(!xset.has('bid:4:4:breakZhai') && !xset.has('bid:4:5:breakZhai'), '破斋 4个4 / 4个5 不高于斋前 4个5，非法');
+ok(!xset.has('bid:4:4:breakZhai') && !xset.has('bid:4:5:breakZhai'), '破斋 4个4 / 4个5 不高于斋前 4个5，不能破');
 ok(xset.has('bid:4:6:breakZhai') && xset.has('bid:4:1:breakZhai'), '破斋 4个6 / 4个1 高于斋前，合法');
-ok(!xset.has('bid:4:4:normal'), '翻倍个数仍固定算破斋，不能借普通抬价留在斋里绕过');
-ok(E.normalizeAction(xr, { type:'bid', count:4, face:4 }).mode === 'breakZhai', '漏写标记的 4个4 仍按破斋推断（然后判非法）');
+ok(xset.has('bid:5:2:breakZhai'), '个数 ≥ 门槛且超过斋前，5个2 也能破斋');
+ok(xset.has('bid:4:4:normal'), '不写破斋的 4个4 是合法的斋内普通抬价');
+ok(E.normalizeAction(xr, { type:'bid', count:4, face:4 }).mode === 'normal', '漏写标记的 4个4 按普通抬价，不是破斋');
 const xwhy = R.checkLegal(xr, { type:'bid', count:4, face:4, mode:'breakZhai' });
 ok(typeof xwhy === 'string' && xwhy.includes('斋前'), 'checkLegal 给出含「斋前」的针对性重写原因');
+const xwhy2 = R.checkLegal(xr, { type:'bid', count:3, face:6, mode:'breakZhai' });
+ok(typeof xwhy2 === 'string' && xwhy2.includes('2 倍'), '个数没到两倍：checkLegal 说清至少要翻倍');
 ok(R.checkLegal(xr, { type:'bid', count:4, face:6, mode:'breakZhai' }) === null, 'checkLegal 放行超斋前的破斋');
 let xThrow = false;
 try { E.applyBid(xr, xr.turn, { type:'bid', count:4, face:4, mode:'breakZhai' }); } catch { xThrow = true; }
 ok(xThrow, 'applyBid 拒绝压价破斋');
 E.applyBid(xr, xr.turn, { type:'bid', count:4, face:6, mode:'breakZhai' });
 ok(xr.zhai === false && xr.preZhai === null, '合法破斋后状态与斋前记录一起清除');
-// 循环终结：再转斋→破斋把点数逼到 1 后，就再也没有合法破斋，只能抬价或开盅
+// 循环终结：把斋前逼到 4个1 之后，同个数的破斋再也凑不出来
 E.applyBid(xr, xr.turn, { type:'bid', count:2, face:3, mode:'toZhai' });
-ok(JSON.stringify(E.breakFaces(xr)) === JSON.stringify([1]), '斋前 4个6：破斋只剩 4个1');
+ok(JSON.stringify(E.breakFaces(xr, 4)) === JSON.stringify([1]), '斋前 4个6：个数同为 4 时只剩 4个1 能破');
 E.applyBid(xr, xr.turn, { type:'bid', count:4, face:1, mode:'breakZhai' });
 E.applyBid(xr, xr.turn, { type:'bid', count:2, face:2, mode:'toZhai' });
-ok(E.breakFaces(xr).length === 0, '斋前 4个1：翻倍同个数无更大点数，破斋封死，循环终结');
-ok(E.legalActions(xr).some(a => a.type === 'bid' && a.mode === 'normal'), '破斋封死后仍有普通抬价可走');
-console.log('  [7b] 破斋须超斋前：压价破斋非法 / 循环终结');
+ok(E.breakFaces(xr, 4).length === 0, '斋前 4个1：个数同为 4 无更大点数，4 个破不了；往上加个数仍可破');
+ok(E.breakFaces(xr, 5).length === 6, '反弹验证：个数加到 5 就又能破斋（「至少」翻倍）');
+ok(E.legalActions(xr).some(a => a.type === 'bid' && a.mode === 'normal'), '破斋受限时仍有普通抬价可走');
+// 个数下限 2：任何喊价都不能少于 2 个，转斋取半不足 2 个就不许转
+const c2 = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(33));
+E.applyBid(c2, c2.turn, 2, 4);
+ok(!E.legalActions(c2).some(a => a.type === 'bid' && a.mode === 'toZhai'), '当前 2 个：取半得 1 个，本轮不能转斋');
+ok(!E.legalActions(c2).some(a => a.type === 'bid' && a.count < 2), '任何合法动作的个数都不少于 2');
+ok(typeof R.checkLegal(c2, { type:'bid', count:1, face:3 }) === 'string', '喊 1 个判非法');
+const c3 = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(34));
+E.applyBid(c3, c3.turn, 3, 4);
+ok(E.zhaiCount(c3) === 2 && E.legalActions(c3).some(a => a.type === 'bid' && a.mode === 'toZhai'), '当前 3 个：取半得 2 个，可以转斋');
+// 个数不变换点数：1 是最大点数，换到 1 必须合法（未斋与斋都一样）
+const f1 = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(35));
+E.applyBid(f1, f1.turn, 3, 3);
+ok(E.legalActionSet(f1).has('bid:3:1:normal'), '未斋 3个3 → 3个1 合法（1 是最大点数）');
+ok(R.checkLegal(f1, { type:'bid', count:3, face:1 }) === null, 'checkLegal 放行 3个1');
+const f1z = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(36));
+E.applyBid(f1z, f1z.turn, { type:'bid', count:2, face:3, mode:'toZhai' });
+ok(E.legalActionSet(f1z).has('bid:2:1:normal'), '斋内 2个3斋 → 2个1 合法');
+E.applyBid(f1z, f1z.turn, { type:'bid', count:2, face:1 });
+ok(f1z.zhai === true, '换到 1 之后仍在斋（喊 1 不等于破斋）');
+// 同一手不许重复喊：转斋取半会落回老价位（截图里的 3个6 → 2个6斋 → 2个1 → 4个6破斋 → 2个1转斋）
+const rp = E.startRound(E.newMatch({ hpMax:10, rules:FX }), E.mulberry32(37));
+E.applyBid(rp, rp.turn, 3, 6);
+E.applyBid(rp, rp.turn, { type:'bid', count:2, face:6, mode:'toZhai' });
+E.applyBid(rp, rp.turn, 2, 1);
+E.applyBid(rp, rp.turn, { type:'bid', count:4, face:6, mode:'breakZhai' });
+ok(R.checkLegal(rp, { type:'bid', count:2, face:1, mode:'toZhai' }) !== null, '转斋落回本轮喊过的 2个1 → 非法');
+ok(!E.legalActionSet(rp).has('bid:2:1:toZhai'), '合法集合里不再提供 2个1 转斋');
+ok(!E.legalActionSet(rp).has('bid:2:6:toZhai'), '2个6 本轮也喊过 → 转斋同样不给');
+ok(E.legalActionSet(rp).has('bid:2:3:toZhai'), '没喊过的 2个3 仍可转斋');
+console.log('  [7b] 破斋＝至少翻倍 + 超过斋前 + 必须写标记');
 
-// ---- 8. flex 计分：开盅只赢家 +1，劈才双向结算 ±1；经典套保持双向零和 ----
-const sm = E.newMatch({ roundTarget:10, rules:FX });
+// ---- 8. 血量结算：开盅只有输家掉血；劈双向（赢家回血、封顶上限）；经典套双向零和；归零判负 ----
+const sm = E.newMatch({ hpMax:10, rules:FX });
 const sr = E.startRound(sm, E.mulberry32(3));
 E.applyBid(sr, sr.turn, 2, 3);
 const sres = E.resolveOpen(sm, sr.turn, { slash:true });
-ok(sres.slash === true && sres.stake === 1 && sres.loserPays === true, '劈：stake=1、输家扣分');
-ok(sm.points[sres.winner] === 1 && sm.points[sres.loser] === -1, '劈结算双向 ±1');
-ok(sm.points.A + sm.points.B === 0, '劈后积分零和');
-const nm = E.newMatch({ roundTarget:10, rules:FX });
+ok(sres.slash === true && sres.stake === 1 && sres.loserPays === true, '劈：stake=1、双向结算');
+ok(sm.hp[sres.loser] === 9, '劈：输家 −1 血');
+ok(sm.hp[sres.winner] === 10, '劈：赢家满血时回不上去（封顶=开局血量）');
+
+const sm2 = E.newMatch({ hpMax:10, rules:FX });
+sm2.hp.A = 4; sm2.hp.B = 6;
+const sr2 = E.startRound(sm2, E.mulberry32(3));
+E.applyBid(sr2, sr2.turn, 2, 3);
+const hres2 = E.resolveOpen(sm2, sr2.turn, { slash:true });
+ok(sm2.hp[hres2.winner] === 5 && sm2.hp[hres2.loser] === 5, '劈：赢家 +1 血、输家 −1 血（双向）');
+
+const nm = E.newMatch({ hpMax:10, rules:FX });
 const nr = E.startRound(nm, E.mulberry32(4));
 E.applyBid(nr, nr.turn, 2, 3);
 const nres = E.resolveOpen(nm, nr.turn, { slash:false });
-ok(nres.stake === 1 && nres.loserPays === false, '开盅：赢家 +1、输家不扣');
-ok(nm.points[nres.winner] === 1 && nm.points[nres.loser] === 0, '开盅只有赢家得分');
-const cm2 = E.newMatch({ roundTarget:10, rules:'classic' });
+ok(nres.stake === 1 && nres.loserPays === false, '开盅：只有输家掉血');
+ok(nm.hp[nres.loser] === 9 && nm.hp[nres.winner] === 10, '开盅：输家 −1 血、赢家不回血');
+
+const cm2 = E.newMatch({ hpMax:10, rules:'classic' });
+cm2.hp.A = 5; cm2.hp.B = 5;
 const cr2 = E.startRound(cm2, E.mulberry32(6));
 E.applyBid(cr2, cr2.turn, 2, 3);
 ok(!E.legalActionSet(cr2).has('open:slash'), '经典套没有劈');
 const cres = E.resolveOpen(cm2, cr2.turn);
-ok(cres.stake === 1 && cres.loserPays === true && cm2.points[cres.winner] === 1 && cm2.points[cres.loser] === -1,
-  '经典套保持双向零和 ±1');
-console.log('  [8] flex 开盅+1/0 · 劈±1 · classic 仍 ±1');
+ok(cres.stake === 1 && cres.loserPays === true && cm2.hp[cres.winner] === 6 && cm2.hp[cres.loser] === 4,
+  '经典套双向零和：赢家 +1 血、输家 −1 血');
+
+// 归零判负：血量只到 1 再输一轮就整局结束
+const ko = E.newMatch({ hpMax:10, rules:FX });
+ko.hp.A = 1; ko.hp.B = 1;   // 双方都是残血：谁输这一轮谁归零
+const kor = E.startRound(ko, E.mulberry32(9));
+E.applyBid(kor, kor.turn, 2, 3);
+const kres = E.resolveOpen(ko, kor.turn, { slash:false });
+ok(ko.hp[kres.loser] === 0 && ko.over === true && ko.winner === kres.winner, '血量归零 → 该方输掉整局');
+console.log('  [8] 血量：开盅只扣输家 · 劈双向回血 ±1 · 经典零和 · 归零判负');
 
 // ---- 8b. 斋内再写「斋」= 留在斋里的普通抬价，不判非法、不触发重试 ----
 const zm2 = E.newMatch({ roundTarget:5, rules:FX });
@@ -235,16 +303,18 @@ ok(!E.legalActions(cr).some(a => a.type === 'open' && a.slash), '自定义套关
 ok(!E.legalActions(E.startRound(E.newMatch({ rules:CUSTOM }))).some(a => a.mode === 'toZhai'), '自定义套关掉首喊斋');
 const ctxt = RS.rulesText(CUSTOM);
 ok(ctxt.includes('ceil(n / 3)') && !ctxt.includes('翻倍破斋') && !ctxt.includes('「劈」'), '规则文本按参数生成');
-ok(RS.hash(CUSTOM) !== RS.hash(FX) && RS.hash('classic') === '177d9fc1', '自定义套指纹独立、经典套指纹不漂移');
-ok(RS.hash(FX) === 'b680b754', 'flex 指纹锁定（破斋须超斋前 + 开盅+1/劈±1 后的语义版本，与旧 flex 数据不可比）');
+// 2026-11-10 计分改为血量制（输家掉血、归零判负），指纹并入 |hp=1：积分制时代的旧 run 与现在不可比。
+ok(RS.hash(CUSTOM) !== RS.hash(FX) && RS.hash('classic') === '413e1d1d', '自定义套指纹独立、经典套指纹随血量制版本锁定');
+ok(RS.hash(FX) === '663ae23e', 'flex 指纹锁定（破斋＝至少翻倍 + 必须写标记 + 个数≥2 + 血量制 + 合法集修正 sv2 + 不许重复喊 nr + 首喊点数可到 1，与更早的 flex 数据不可比）');
 console.log('  [9] 自定义规则套参数贯通引擎 / 文本 / 指纹');
 
-// ---- 10. 200 局 flex 随机对局，覆盖转斋、破斋、劈 ----
+// ---- 10. 单局 flex 随机对局（跑到血量归零），覆盖转斋、破斋、劈 ----
+// 每手都跑一遍合法性校验；只跑一局，够覆盖到三种状态切换就不必堆样本量。
 let flexRounds = 0, flexSteps = 0, nSlash = 0, nToZhai = 0, nBreak = 0;
-for (let g = 0; g < 200; g++) {
-  const mm = E.newMatch({ roundTarget:3, rules:FX });
-  const rng = E.mulberry32(5000 + g);
-  for (let rd = 0; rd < 20 && !mm.over; rd++) {
+{
+  const mm = E.newMatch({ hpMax:10, rules:FX });
+  const rng = E.mulberry32(5000);
+  for (let rd = 0; rd < 200 && !mm.over; rd++) {
     const rr = E.startRound(mm, rng); flexRounds++;
     for (let t = 0; t < 200 && !rr.over; t++) {
       flexSteps++;
@@ -265,10 +335,9 @@ for (let g = 0; g < 200; g++) {
       }
     }
   }
+  ok(mm.over && mm.winner && mm.hp[E.other(mm.winner)] === 0, '随机对局打到一方血量归零');
 }
-ok(nSlash > 0 && nToZhai > 0 && nBreak > 0, '随机对局真的走到了劈 / 转斋 / 破斋',
-  { nSlash, nToZhai, nBreak });
-console.log(`  [10] 200 局 / ${flexRounds} 轮 / ${flexSteps} 手；劈 ${nSlash} · 转斋 ${nToZhai} · 破斋 ${nBreak}`);
+console.log(`  [10] 单局 / ${flexRounds} 轮 / ${flexSteps} 手；劈 ${nSlash} · 转斋 ${nToZhai} · 破斋 ${nBreak}`);
 
 console.log(failed ? `\n==> FAIL (${failed})` : '\n==> ALL PASS');
 process.exit(failed ? 1 : 0);

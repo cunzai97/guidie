@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /* 大话骰 PK CLI。
  * 例：
- *   node src/pk.js --p0 threshold --p1 random --deals 30 --out runs/bot-baseline.jsonl
- *   node src/pk.js --p0 llm:1235:avalon-iq3ks-256k --p1 threshold --deals 6 --thinking off
- *   node src/pk.js --p0 llm:1235:avalon --p1 llm:1236:minimax --deals 6 --context memory --prompt probe
+ *   node src/pk.js --p0 reader --p1 oracle --deals 30 --out runs/bot-baseline.jsonl
+ *   node src/pk.js --p0 llm:1235:avalon-iq3ks-256k --p1 reader --deals 6 --thinking off
+ *   node src/pk.js --p0 llm:1235:avalon --p1 reader --deals 2 --rules flex --hp 10
  *   node src/pk.js --p0 llm:1235:qwen3.8-27b-7900xtx --p1 llm:1236:swift15-gsq-kvmem-v100 --deals 10
- *   node src/pk.js --p0 threshold --p1 random --deals 6 --rules flex --effort high
- * player 规格：threshold[:阈值] | random | always-open | never-open | oracle（纯数学精确期望）| reader（贝叶斯读喊价）| llm:端口:模型名
+ *   node src/pk.js --p0 reader --p1 oracle --deals 6 --rules flex --effort high
+ * player 规格：oracle（纯数学精确期望）| reader（贝叶斯读喊价）| llm:端口:模型名 | wb:模型名
  * 规则集：--rules classic|flex|自定义id（自定义套从 presets.json 的 settings.ruleSets 读）
+ * 计分：血量制。--hp N（或旧名 --target N）= 开局血量兼上限，谁的血先降到 0 谁输。
+ * 提示词臂：--prompt <id>（注册表见 context.js 的 ARMS；当前只有 plain=规则 + 这局怎么赢 + 一句话）。
  */
 const fs = require('fs');
 const os = require('os');
@@ -15,6 +17,7 @@ const path = require('path');
 const { runPK, summarize, pairedCI } = require('./runner.js');
 const bots = require('./bots.js');
 const { makeLLMPlayer } = require('./llm.js');
+const C = require('./context.js');
 const E = require('./dice-engine.js');
 const RL = require('./runlog.js');
 const RS = require('./dice-rulesets.js');
@@ -52,13 +55,16 @@ function resolveRules(id) {
 }
 
 function makePlayer(spec, globalOpts, log) {
+  const reflectOpts = {
+    reflectTokens: globalOpts.reflectTokens, reflectEffort: globalOpts.reflectEffort,
+  };
   if (spec.startsWith('wb:')) {
     const model = spec.slice(3);
     return makeLLMPlayer({
       name: model, baseUrl: WB_BASE + '/v1', model, apiKey: wbKey(),
       thinking: false, thinkingKwargs: false, effort: globalOpts.effort, maxTokens: globalOpts.maxTokens,
-      temperature: globalOpts.temperature, coach: globalOpts.coach, context: globalOpts.context,
-      prompt: globalOpts.prompt, rules: globalOpts.rules,
+      temperature: globalOpts.temperature, context: globalOpts.context,
+      rules: globalOpts.rules, prompt: globalOpts.prompt, ...reflectOpts,
     }, log);
   }
   if (spec.startsWith('llm:')) {
@@ -66,17 +72,10 @@ function makePlayer(spec, globalOpts, log) {
     return makeLLMPlayer({
       name: model, baseUrl: `http://127.0.0.1:${port}/v1`, model,
       thinking: globalOpts.thinking, effort: globalOpts.effort, maxTokens: globalOpts.maxTokens,
-      temperature: globalOpts.temperature, coach: globalOpts.coach, context: globalOpts.context,
-      prompt: globalOpts.prompt, rules: globalOpts.rules,
+      temperature: globalOpts.temperature, context: globalOpts.context,
+      rules: globalOpts.rules, prompt: globalOpts.prompt, ...reflectOpts,
     }, log);
   }
-  if (spec.startsWith('threshold')) {
-    const th = spec.includes(':') ? parseFloat(spec.split(':')[1]) : 0.5;
-    return bots.thresholdBot({ threshold: th });
-  }
-  if (spec === 'random') return bots.randomBot(E.mulberry32(globalOpts.seed || 1));
-  if (spec === 'always-open') return bots.alwaysOpenBot();
-  if (spec === 'never-open') return bots.neverOpenBot();
   if (spec === 'oracle') return bots.oracleBot();
   if (spec === 'reader') return bots.readerBot();
   throw new Error('未知 player 规格: ' + spec);
@@ -85,31 +84,34 @@ function makePlayer(spec, globalOpts, log) {
 let RUN = null;                 // 供异常退出时补写 run-aborted 记录
 
 async function main() {
-  const p0spec = arg('p0', 'threshold');
-  const p1spec = arg('p1', 'random');
+  const p0spec = arg('p0', 'reader');
+  const p1spec = arg('p1', 'oracle');
   const deals = parseInt(arg('deals', '10'), 10);
   const seed = parseInt(arg('seed', '12345'), 10);
-  const target = parseInt(arg('target', '10'), 10);
+  const hpMax = parseInt(arg('hp', arg('target', '10')), 10);   // 初始血量（上限）；--target 为旧名兼容
   const maxRounds = parseInt(arg('max-rounds', '30'), 10);
   const out = arg('out', null);
   const globalOpts = {
     thinking: arg('thinking', 'off') === 'on',
     effort: arg('effort', 'off'),   // off | low | medium | high | xhigh
     maxTokens: parseInt(arg('max-tokens', '8192'), 10),
-    temperature: parseFloat(arg('temperature', '0.7')),
-    coach: has('coach'), seed,
+    temperature: parseFloat(arg('temperature', '0.7')), seed,
+    prompt: arg('prompt', null),   // 提示词臂；null=用注册表默认臂（当前只有一套）
     context: arg('context', 'chat'),   // chat=持久逐字对话(默认) | memory=追加式摘要链(轮末自总结压缩) | snapshot=窗口快照(对比臂)
-    prompt: arg('prompt', 'classic'),  // classic=原版兵书(默认，与历史可比) | probe=轻量引导(不给结论+轮间软提示复盘)
     rules: resolveRules(arg('rules', 'classic')),
+    // 连败反思臂：局内连续输满 N 轮触发一次深度总结，反思文本取代兵书与此前所有总结。0=关闭
+    reflectAfter: parseInt(arg('reflect', '0'), 10),
+    reflectTokens: parseInt(arg('reflect-tokens', '16384'), 10),
+    reflectEffort: arg('reflect-effort', 'high'),
   };
 
   const append = has('append');
   const cfg = {
-    p0: p0spec, p1: p1spec, deals, seed, target, maxRounds,
+    p0: p0spec, p1: p1spec, deals, seed, hpMax, maxRounds,
     out: out || null, append,
     thinking: globalOpts.thinking, effort: globalOpts.effort, maxTokens: globalOpts.maxTokens,
-    temperature: globalOpts.temperature, coach: globalOpts.coach, context: globalOpts.context,
-    prompt: globalOpts.prompt, rules: globalOpts.rules,
+    temperature: globalOpts.temperature, context: globalOpts.context, rules: globalOpts.rules, prompt: globalOpts.prompt,
+    reflectAfter: globalOpts.reflectAfter, reflectTokens: globalOpts.reflectTokens, reflectEffort: globalOpts.reflectEffort,
   };
   const runId = RL.makeRunId(cfg);
   RUN = { runId, out };
@@ -121,15 +123,16 @@ async function main() {
 
   const p0 = makePlayer(p0spec, globalOpts, log);
   const p1 = makePlayer(p1spec, globalOpts, log);
-  console.error(`PK: ${p0.name}  vs  ${p1.name} | run=${runId} deals=${deals} seed=${seed} target=${target} maxRounds=${maxRounds} context=${globalOpts.context} prompt=${globalOpts.prompt} rules=${globalOpts.rules.id}(${RS.hash(globalOpts.rules)}) effort=${globalOpts.effort} maxTokens=${globalOpts.maxTokens} thinking=${globalOpts.thinking ? 'on' : 'off'} coach=${globalOpts.coach}`);
+  console.error(`PK: ${p0.name}  vs  ${p1.name} | run=${runId} deals=${deals} seed=${seed} hp=${hpMax} maxRounds=${maxRounds} context=${globalOpts.context} arm=${C.armOf(globalOpts.prompt).label} rules=${globalOpts.rules.id}(${RS.hash(globalOpts.rules)}) effort=${globalOpts.effort} maxTokens=${globalOpts.maxTokens} thinking=${globalOpts.thinking ? 'on' : 'off'}`);
 
   const t0 = Date.now();
   const { agg, games } = await runPK(p0, p1, {
-    deals, seed, roundTarget: target, maxRounds, runId, rules: globalOpts.rules,
+    deals, seed, hpMax, maxRounds, runId, rules: globalOpts.rules,
+    reflectAfter: globalOpts.reflectAfter,
     onGame: (g, d, swap) => {
       if (outStream) outStream.write(JSON.stringify({ t: Date.now(), kind: 'game', ...g }) + '\n');
       const w = g.winner ? (g.winner === g.seatOf.p0 ? p0.name : p1.name) : '未评';
-      console.error(`  deal ${d + 1}/${deals} ${swap ? '交换' : '原座'} seed=${g.seed} → ${w} (${g.rounds}轮${g.capped ? ',封顶' : ''}, 积分 ${g.points.A}:${g.points.B})`);
+      console.error(`  deal ${d + 1}/${deals} ${swap ? '交换' : '原座'} seed=${g.seed} → ${w} (${g.rounds}轮${g.capped ? ',封顶' : ''}, 血量 ${g.hp.A}:${g.hp.B})`);
     },
   });
 

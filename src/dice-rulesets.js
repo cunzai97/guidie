@@ -5,7 +5,7 @@
  * 两套内置：
  *   classic —— 原来的规则，逐字保留（点数 1 = 斋、锁死点数、无转斋/破斋/劈），历史 run 可比。
  *   flex    —— 新规则：取半向上取整转斋（点数任意）、斋内同普通规则抬价、
- *              翻倍个数破斋（1 恢复万能，且须大于斋前一手）、劈（双向结算 ±1）；开盅只赢家加分。
+ *              翻倍个数破斋（1 恢复万能，且须大于斋前一手）、劈（双向结算 ±1）；开盅只扣输家血。
  * 用户可在设置里把任意一套另存为自定义套，逐项改参数；规则文本会按参数自动生成。
  */
 (function (root, factory) {
@@ -30,7 +30,7 @@
     slash: false,           // 「劈」
     slashStake: 2,          // 劈的积分（零和）
     stake: 1,               // 普通开盅的积分
-    openLoserLoses: true,   // 开盅是否双向零和（true=输家也扣分；false=只有赢家得分）
+    openLoserLoses: true,   // 开盅是否双向结算（true=赢家也回血；false=只有输家掉血）
     autoInfer: true,        // 漏写标记时按个数自动识别转斋 / 破斋
   };
 
@@ -40,7 +40,9 @@
     zhaiMode: 'half', halfDivisor: 2, faceFree: true, lockFace: false,
     breakMultiplier: 2, breakRestoresWild: true,
     breakMustExceed: true,  // 破斋还须严格大于斋前一手；不给关掉它的自由度，否则转斋→破斋可压价死循环
-    firstFace1: false, firstZhai: true, firstMin: 2, firstMax: 6, maxCount: 10,
+    firstFace1: true,  // 首喊点数可以是 1~6（喊 1 只是喊 1：未斋时也只数真 1，不等于进斋）
+    firstZhai: true,   // 首喊也能直接喊斋
+    firstMin: 2, firstMax: 6, maxCount: 10,
     slash: true, slashStake: 1, stake: 1, autoInfer: true,
     openLoserLoses: false,  // 开盅只赢家 +1，输家不扣；只有劈才双向结算（±1）
   };
@@ -73,6 +75,7 @@
       breakMustExceed: true,   // half 套强制开：这是漏洞修复不是可选参数（同 maxCount 固定 10）
       firstFace1: BOOL(o.firstFace1, base.firstFace1),
       firstZhai: BOOL(o.firstZhai, base.firstZhai),
+      minCount: 2,        // 任何喊价的个数下限（固定 2，不可配置）：首喊、转斋取半、破斋都一样
       firstMin: INT(o.firstMin, 2, 6, 2),
       firstMax: INT(o.firstMax, INT(o.firstMin, 2, 6, 2), 10, 6),
       maxCount: 10,
@@ -106,7 +109,17 @@
       r.breakRestoresWild, r.firstFace1, r.firstMin, r.firstMax, r.slash, r.slashStake, r.stake, r.autoInfer].join('|')
       // firstZhai / breakMustExceed / openLoserLoses 只在 half 套里才有意义；这样内置 classic 的指纹不因新增参数而漂移。
       // breakMustExceed 入哈希是语义版本：破斋判定修过（须超斋前），新旧 flex 数据不可比，指纹必须分开。
-      + (r.zhaiMode === 'half' ? '|fz=' + r.firstZhai + '|bme=' + (r.breakMustExceed ? 1 : 0) + '|oll=' + (r.openLoserLoses ? 1 : 0) : '');
+      + (r.zhaiMode === 'half' ? '|fz=' + r.firstZhai + '|bme=' + (r.breakMustExceed ? 1 : 0) + '|oll=' + (r.openLoserLoses ? 1 : 0) : '')
+      // 计分从"积分制"改成"血量制"（输家掉血、归零判负）：输赢口径变了，新旧数据不可比，指纹必须分开。
+      + '|hp=1'
+      // 破斋语义版本 bv=2：个数「至少翻倍」（旧：正好翻倍）+ 必须显式写「破斋」（旧：可按个数自动推断）。
+      + (r.zhaiMode === 'half' && r.breakMultiplier ? '|bv=2' : '')
+      + (r.zhaiMode === 'half' ? '|mn=' + r.minCount : '')
+      // 合法动作集合修正（个数不变可以换到点数 1）：合法集变了，指纹必须分开。
+      + (r.zhaiMode === 'half' ? '|sv=2' : '')
+      // 不许重复喊本轮已出现过的同一手（转斋取半会绕回老价位）：合法集与提示词一起变了。
+      // 只对 half 套有意义——经典套本来就严格递增，喊不出重复的一手。
+      + (r.zhaiMode === 'half' ? '|nr=1' : '');
     let h = 0x811c9dc5;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
     return ('0000000' + h.toString(16)).slice(-8);
@@ -122,7 +135,7 @@
       if (r.firstZhai) bits.push('首喊可斋');
     } else bits.push('喊1为斋·锁点数');
     if (r.slash) bits.push('劈±' + r.slashStake);
-    bits.push('开盅+' + r.stake + (r.openLoserLoses ? '/−' + r.stake : '·输家不扣'));
+    bits.push('开盅扣输家 ' + r.stake + ' 血' + (r.openLoserLoses ? '·赢家回血' : '·赢家不回'));
     return bits.join(' · ');
   }
 
@@ -130,56 +143,39 @@
    * 保证提示词指纹与历史 run 完全一致。其它套按参数生成，自定义套改了参数规则就跟着变。 */
   function rulesText(raw) {
     const r = normalize(raw);
-    if (r.builtin && r.id === 'classic') return null;
-    const L = ['大话骰规则（两人对决，本桌采用这一套）：'];
-    L.push('- 每人一个骰盅、5 颗骰子，全场共 10 颗。每轮开始两人各自摇骰；你只能看见自己的 5 颗，看不见对手的 5 颗。');
-    L.push('- 两人轮流喊价，喊价形如"n 个 m"，意思是：全场 10 颗骰子里，点数 m 至少有 n 个。');
-    L.push('- 点数大小顺序：2 < 3 < 4 < 5 < 6 < 1。');
-    L.push('- 本轮有一个"斋"状态，开局为"未斋"。未斋时 1 是万能牌：凑任意点数 m（m≠1）的个数时，全场任意一颗 1 都算作 m，你自己的和对手的都算；喊点数 1 时只数真实的 1。斋状态下 1 不再万能，任何点数都只数真实的该点数。');
+    if (r.builtin && r.id === 'classic') return null;   // 经典套走 context.js 的逐字文本，指纹不变
+    const L = ['大话骰规则（本桌）：两人各 5 颗骰子，全场 10 颗，你只看自己的 5 颗。'];
+    L.push('- 喊价「n 个 m」＝ 全场至少有 n 颗点数是 m。点数大小 2 < 3 < 4 < 5 < 6 < 1。');
+    L.push('- 未斋：1 算万能，凑任何点数（除 1）时 1 都顶一个；喊 1 时只数真的 1。斋：1 不算万能。');
+    L.push('- 每手个数不得少于 ' + r.minCount + ' 个。');
+    L.push('- 抬价两种：个数加得更多（点数任意换）；或个数不变、点数换成更大的。');
+    L.push('- 本轮已经喊过的「X 个 Y」不能原样再喊一遍。');
 
     if (r.zhaiMode === 'half') {
-      const c = '取半向上取整：把当前最高价的个数 n 换成 ceil(n / ' + r.halfDivisor + ')';
-      L.push('- 转斋（从"未斋"进入"斋"）：轮到你时，可以不抬价而改喊"斋"——个数按' + c
-        + '，点数' + (r.faceFree ? ' 1~6 任意选，不必喊 1' : '只能喊 1')
-        + '。这是全场唯一允许个数变小的喊价；喊出这一手后本轮进入斋状态，1 不再万能。'
-        + '行动行写「行动：喊 X 个 Y 斋」。'
-        + '已经在斋里时，普通抬价写不写「斋」都按普通抬价处理（写「斋」不会被当成转斋）。'
-        + (r.autoInfer ? '漏写「斋」但个数正好等于取半值时，也按转斋处理。' : '必须写出「斋」字，否则按普通喊价判非法。')
-        + (r.firstZhai ? ' 首喊是唯一例外：开局第一手也能直接喊斋，且不用取半，见下面「首喊」那一条。' : ''));
+      L.push('- 转斋：个数改为上一手取半向上取整 ceil(n / ' + r.halfDivisor + ')，点数'
+        + (r.faceFree ? ' 1~6 任选' : '只能是 1') + '，本轮从此进斋。这是唯一允许个数变小的喊价。'
+        + '行动写「喊 X 个 Y 斋」' + (r.autoInfer ? '；漏写「斋」但个数正好是取半值，也按转斋算。' : '，不写「斋」就按普通抬价判。'));
       if (r.breakMultiplier) {
-        L.push('- 破斋（从"斋"回到"未斋"）：斋状态下，喊出个数正好等于当前个数 × ' + r.breakMultiplier
-          + ' 的一手，且这一手严格大于斋前那一手（转斋前的最高价：个数更多，或个数相同但点数更大），才能破斋。'
-          + '只翻倍、不超过斋前一手是非法的——否则转斋再破斋就能把价越喊越低、无限循环。破斋这一手起 1 '
-          + (r.breakRestoresWild ? '恢复万能' : '仍不算万能')
-          + '。行动行写「行动：喊 X 个 Y 破斋」。'
-          + (r.autoInfer ? '漏写「破斋」但个数正好等于翻倍值时，也按破斋处理；翻倍这一手固定算破斋，不再算留在斋里的普通抬价。' : '必须写出「破斋」二字。')
-          + (r.firstZhai ? '首喊直接喊斋的那一轮没有斋前一手，翻倍即可破斋，不受这条限制。' : ''));
-      } else L.push('- 本桌不允许破斋：一旦进入斋，本轮剩余喊价都在斋状态内。');
-      L.push('- 除上面两种状态切换外，任何一手新喊价都必须严格大于上一手：①把个数加得比上一手多（加几个都行，可一次跳加好几个，此时点数 1~6 任意换）；②个数不变、点数换成更大的（按 2<3<4<5<6<1）。'
-        + (r.lockFace ? '斋内例外：只能继续加斋那一手点数的个数，不能换点数。' : '斋内同样适用这两条，唯一区别是 1 始终不算万能。'));
+        L.push('- 破斋：斋状态下同时做到 —— 个数至少是当前的 ' + r.breakMultiplier + ' 倍'
+          + (r.breakMustExceed ? '、整手大于进斋前那一手' : '')
+          + '、行动里写明「破斋」，才回到未斋。条件够却没写「破斋」，只是斋内的普通抬价。'
+          + (r.breakRestoresWild ? '破斋这一手起 1 恢复万能。' : '')
+          + '行动写「喊 X 个 Y 破斋」。');
+      } else L.push('- 本桌不能破斋：进了斋，本轮剩下的喊价都在斋里。');
+      L.push('- 斋里的抬价规则不变' + (r.lockFace ? '，只是只能加斋那一手的点数，不能换。' : '。'));
     } else {
-      L.push('- 一旦有人喊到点数 1（称为"斋"）：从这一手起 1 不再万能，且之后只能继续加 1 的个数（不能换别的点数）。');
-      L.push('- 新喊价必须严格大于上一手，两种方式之一：①把个数加得比上一手多——加几个都行，可以一次跳加好几个（此时点数 2~6 可任意换，也可喊 1 转斋）；②个数不变、点数换成更大的（按 2<3<4<5<6<1）。');
+      L.push('- 有人喊到点数 1 即进入斋：此后 1 不算万能，且只能继续加 1 的个数（不能换点数）。');
     }
 
-    L.push('- 首喊（本轮第一手）：个数只能 ' + r.firstMin + '~' + r.firstMax
-      + '、点数只能 ' + (r.firstFace1 ? '1~6' : '2~6') + '，不能开盅' + (r.slash ? '、不能劈' : '')
-      + '，也不能破斋'
-      + (r.zhaiMode === 'half' && r.firstZhai ? '；但可以直接喊斋（见下一条）' : '或转斋') + '。');
-    if (r.zhaiMode === 'half' && r.firstZhai) {
-      L.push('- 首喊也可以直接喊斋：仍按上一条的个数与点数选一手，在末尾写上「斋」即可（行动行「行动：喊 X 个 Y 斋」）。'
-        + '首喊没有上一手，所以不需要取半；但这一手起本轮就是斋状态，1 不再万能，对手照样可以用翻倍个数破斋把 1 变回万能。');
-    }
-    L.push('- 轮到你时，你可以喊价，也可以不喊而改为"开盅"。开盅就是质疑此刻全场最新的那一手喊价（也就是当前最高价），本轮随即结束、双方亮牌结算。');
-    if (r.slash) L.push('- 你也可以改为「劈」：劈和开盅完全一样（质疑同一手、同样亮牌结算），区别是双向结算——赢家 +' + r.slashStake + ' 分、输家 −' + r.slashStake + ' 分'
-      + (r.openLoserLoses ? '' : '（开盅时输家不扣分，劈是唯一让对手掉分的手段）')
-      + '。行动行写「行动：劈」。');
-    L.push('- 被质疑、被检验的只有"开盅或劈之前最近的一手"，更早的喊价一概不参与结算。轮到你时，那一手是对手刚喊的；但只要你抬出一手新价，最新一手就换成你喊的——此后对手开盅或劈，被检验的就是你这一手，输赢也按你这一手算。');
-    L.push('- 结算：亮出全场 10 颗，只数被质疑那一手喊的"n 个 m"里点数 m 的个数（该手未斋且 m≠1 时 1 也算 m，双方都算；该手在斋状态下 1 不算 m）。够 n 个或更多 → 喊价成立，开盅/劈的一方输、喊那一手的人赢；不足 n 个 → 喊价不成立，喊那一手的人输、开盅/劈的一方赢。');
-    L.push('- 每轮结算积分：开盅时赢家 +' + r.stake + ' 分' + (r.openLoserLoses ? '、输家 −' + r.stake + ' 分' : '、输家不扣分')
-      + (r.slash ? '；劈时赢家 +' + r.slashStake + ' 分、输家 −' + r.slashStake + ' 分' : '')
-      + '。率先达到 +{TARGET} 分者赢下整个对局。');
-    L.push('- 每轮由上一轮输的人先喊；第一轮由系统指定。');
+    L.push('- 首喊：个数 ' + r.firstMin + '~' + r.firstMax + '、点数 ' + (r.firstFace1 ? '1~6（喊 1 只是喊 1，不进斋）' : '2~6')
+      + '；不能开盅' + (r.slash ? '、劈' : '') + '、破斋'
+      + (r.zhaiMode === 'half' && r.firstZhai ? '。写「斋」可以直接以斋开局，不取半' : '，也不能转斋') + '。');
+    L.push('- 开盅：质疑当前最高价并亮牌。够数 → 开的人输；不够 → 喊的人输。输家 −' + r.stake + ' 血'
+      + (r.openLoserLoses ? '、赢家 +' + r.stake + ' 血（封顶）' : '、赢家不回血') + '。');
+    if (r.slash) L.push('- 劈：和开盅同一次检验，但双向算账——赢家 +' + r.slashStake + ' 血（封顶）、输家 −' + r.slashStake + ' 血。行动写「劈」。');
+    L.push('- 被检验的永远是当前最高价那一手：你抬价之后，对手开盅检验的就是你的价。');
+    L.push('- 血量：双方各 {TARGET} 点起，谁先归零谁输掉整局。');
+    L.push('- 上一轮输的人先喊，第一轮系统指定。');
     return L.join('\n');
   }
 

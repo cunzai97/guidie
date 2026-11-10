@@ -1,9 +1,17 @@
-/* 基线 bot：免费午餐检查。LLM 赢不了阈值 bot，就说明没展现出超越算概率的博弈能力。
+/* 两个基线 bot（只有这两个）：
+ *   oracle —— 纯数学地板：精确期望 + 两层 expectimax，确定性，不读喊价。
+ *   reader —— 贝叶斯读牌：把对手的喊价当情报，反推手牌分布。
  * 统一接口：decide(match, who) -> {type:'open', slash?} | {type:'bid',count,face,mode?}
  * bot 只看自己的骰子和公开喊价，绝不偷看对手骰子。
  * 合法动作集合直接取引擎的 legalActions（按当前规则集），新套下也可能转斋/破斋/劈。
+ *
+ * UMD：Node（CLI / 测试）走 require，浏览器（竞技场）挂 window.DiceBots——
+ * 同一份实现两边共用，竞技场里选机器人对战时走的就是这里的决策逻辑。
  */
-const E = require('./dice-engine.js');
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./dice-engine.js'));
+  else root.DiceBots = factory(root.DiceEngine);
+})(typeof self !== 'undefined' ? self : this, function (E) {
 
 function legalActions(round) {
   return E.legalActions(round).map(a => {
@@ -12,66 +20,6 @@ function legalActions(round) {
     const zhai = a.mode === 'toZhai' ? true : a.mode === 'breakZhai' ? false : !!round.zhai;
     return Object.assign({}, a, { zhai: E.rulesOf(round).zhaiMode === 'face1' ? (a.face === 1) : zhai });
   });
-}
-
-// 最小合法加价（兜底/never-open 用）：个数优先小，点数按顺序小
-function minBid(round) {
-  const bids = legalActions(round).filter(a => a.type === 'bid');
-  if (!bids.length) return null;
-  bids.sort((x, y) => x.count - y.count || E.ord(x.face) - E.ord(y.face));
-  return bids[0];
-}
-
-// 阈值 bot：P(当前叫点为真|我的骰子) < 阈值就开；否则喊一个"最可能为真"的合法价。
-function thresholdBot(opts = {}) {
-  const th = opts.threshold == null ? 0.5 : opts.threshold;
-  return {
-    name: `threshold(${th})`,
-    decide(match, who) {
-      const r = match.round;
-      if (r.bid && E.probBidTrue(r.bid, r.dice[who]) < th) return { type: 'open' };
-      const bids = legalActions(r).filter(a => a.type === 'bid');
-      if (!bids.length) return { type: 'open' };
-      let best = null, bestP = -1;
-      for (const b of bids) {
-        const p = E.probBidTrue(b, r.dice[who]);
-        if (p > bestP + 1e-9 || (Math.abs(p - bestP) < 1e-9 && best && b.count < best.count)) {
-          best = b; bestP = p;
-        }
-      }
-      return best || minBid(r);
-    },
-  };
-}
-
-function randomBot(rng) {
-  const R = rng || Math.random;
-  return {
-    name: 'random',
-    decide(match, who) {
-      const acts = legalActions(match.round);
-      return acts[Math.floor(R() * acts.length)];
-    },
-  };
-}
-
-function alwaysOpenBot() {
-  return {
-    name: 'always-open',
-    decide(match, who) {
-      if (match.round.bid) return { type: 'open' };
-      return minBid(match.round);
-    },
-  };
-}
-
-function neverOpenBot() {
-  return {
-    name: 'never-open',
-    decide(match, who) {
-      return minBid(match.round) || { type: 'open' };
-    },
-  };
 }
 
 /* 纯数学 oracle：精确期望 + 两层 expectimax，零训练、零拟合参数、确定性。
@@ -376,4 +324,18 @@ function readerBot(opts = {}) {
   };
 }
 
-module.exports = { legalActions, minBid, thresholdBot, randomBot, alwaysOpenBot, neverOpenBot, oracleBot, readerBot, readerBelief, qOpen, tail5 };
+/* ---------- 机器人注册表 ----------
+ * 竞技场的下拉框、CLI 的 player 规格、测试都从这张表读；加新机器人只需加一个条目。
+ */
+const BOTS = {
+  'oracle': { label: 'oracle · 期望最大化', desc: '算清对手手牌分布再决策，纯数学地板，很慢', make: () => oracleBot() },
+  'reader': { label: 'reader · 贝叶斯读牌', desc: '把对手喊价当情报读，最强基线', make: () => readerBot() },
+};
+function makeBot(spec, rng) {
+  const b = BOTS[spec];
+  if (!b) throw new Error('未知机器人: ' + spec);
+  return b.make(rng || Math.random);
+}
+
+return { legalActions, oracleBot, readerBot, readerBelief, qOpen, tail5, BOTS, makeBot };
+});

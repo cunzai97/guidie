@@ -92,7 +92,7 @@
       return legal.has(E.actionKey(norm)) ? null : '这一手不合法。';
     }
     const count = norm.count, face = norm.face;
-    if (!(count >= 1 && count <= R.maxCount)) return '个数要在 1 到 ' + R.maxCount + ' 之间（全场一共 10 颗骰子）。';
+    if (!(count >= R.minCount && count <= R.maxCount)) return '个数至少 ' + R.minCount + ' 个、最多 ' + R.maxCount + ' 个（全场一共 10 颗骰子；本桌任何喊价都不许少于 ' + R.minCount + ' 个，转斋取半后不够 ' + R.minCount + ' 个也不许转）。';
     if (!(face >= 1 && face <= 6)) return '点数只能是 1 到 6。';
     if (norm.mode === 'toZhai') {
       if (R.zhaiMode !== 'half') return '本桌不支持转斋：这里只有喊点数 1 才叫斋。';
@@ -103,20 +103,21 @@
         // 已在斋里的「斋」标记已被 normalizeAction 折成普通抬价，这里只处理真正的转斋。
         const zc = E.zhaiCount(r);
         if (count !== zc) return '转斋的个数必须取上一手 ' + p.count + ' 个的一半向上取整，也就是 ' + zc + ' 个。';
+        if (zc < R.minCount) return '取半后只有 ' + zc + ' 个，不足 ' + R.minCount + ' 个，这一手不能转斋（抬价或开盅）。';
         if (!R.faceFree && face !== 1) return '本桌转斋时点数只能喊 1。';
       }
     } else if (norm.mode === 'breakZhai') {
       if (R.zhaiMode !== 'half' || !R.breakMultiplier) return '本桌不允许破斋。';
       if (!r.zhai) return '本轮还没进斋，谈不上破斋。';
-      const bc = E.breakCount(r);
-      if (bc == null) return '翻倍后会超过 10 颗，这一手破不了斋。';
-      if (count !== bc) return '破斋的个数必须是当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍，也就是 ' + bc + ' 个。';
-      const bf = E.breakFaces(r);
+      const min = E.breakMinCount(r);
+      if (min == null || min > R.maxCount) return '翻倍后会超过 10 颗，这一手破不了斋。';
+      if (count < min) return '破斋的个数至少要·到当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍，也就是 ' + min + ' 个以上（至少，不是正好）。';
+      const bf = E.breakFaces(r, count);
       if (bf && bf.indexOf(face) < 0) {
         const pre = r.preZhai;
-        if (pre && bc === pre.count) return '破斋翻倍后和斋前那一手（' + pre.count + ' 个 ' + pre.face + '）一样多，点数就必须比 ' + pre.face
-          + ' 更大（顺序 2<3<4<5<6<1）；否则转斋再破斋能把价越喊越低，无限循环。';
-        return '破斋这一手还必须严格大于斋前那一手' + (pre ? '（' + pre.count + ' 个 ' + pre.face + '）' : '') + '，翻倍到 ' + bc + ' 个超不过它，破不了斋。';
+        if (pre && count === pre.count)
+          return '破斋还要求这一手严格大于斋前那一手：个数同为 ' + pre.count + ' 时，点数要比 ' + pre.face + ' 更大（顺序 2<3<4<5<6<1）；否则转斋再破斋能把价越喊越低。';
+        return '破斋还要求这一手严格大于斋前那一手' + (pre ? '（' + pre.count + ' 个 ' + pre.face + '）' : '') + '，' + count + ' 个超不过它，破不了斋。';
       }
     }
     if (!p) {
@@ -125,6 +126,8 @@
       if (!R.firstFace1 && face === 1) return '首喊不能喊 1。';
       return legal.has(E.actionKey(norm)) ? null : '这一手不是本桌的合法首喊。';
     }
+    if (E.repeatedBid(r, count, face))
+      return '本轮已经喊过「' + count + ' 个 ' + face + '」，同一手不能重复喊（个数和点数都一样就算重复；转斋取半后绕回老价位也不行），换个个数或点数。';
     if (R.zhaiMode === 'face1' && p.face === 1 && !(count > p.count && face === 1))
       return '上一手喊的是 1（斋），之后只能继续加 1 的个数。';
     if (legal.has(E.actionKey(norm))) return null;

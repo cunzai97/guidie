@@ -152,8 +152,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             obj = json.loads(self.rfile.read(n).decode('utf-8'))
             if not isinstance(obj, dict) or not isinstance(obj.get('seats'), dict):
                 raise ValueError('seats required')
-            if not all(k in obj['seats'] for k in ('A', 'B')) or not isinstance(obj.get('points'), dict):
-                raise ValueError('seats.A/B and points required')
+            # 计分口径：血量制（hp）为准；旧账本里的 points 字段继续可读可写，不把历史记录冲掉。
+            if not all(k in obj['seats'] for k in ('A', 'B')) or not (isinstance(obj.get('hp'), dict) or isinstance(obj.get('points'), dict)):
+                raise ValueError('seats.A/B and hp (or legacy points) required')
             if not obj.get('ruleset_hash') or not obj.get('prompt_hash'):
                 raise ValueError('fingerprints required')
             with open(MATCH_LOG, 'a', encoding='utf-8') as f:

@@ -1,0 +1,143 @@
+<view class="page">
+  <!-- 身份 -->
+  <view class="card">
+    <view class="row">
+      <view class="h2">上桌身份</view>
+      <text class="chip {{logged ? 'live' : 'ghost'}}">{{logged ? '已登录' : '匿名'}}</text>
+    </view>
+    <view class="field mt">
+      <text class="lab">昵称</text>
+      <input class="input" value="{{nick}}" maxlength="24" placeholder="上桌显示的名字" bindinput="onNick" />
+    </view>
+    <view class="hint">{{logged
+      ? '配置存在服务器上，Key 加密保存，换手机也在。'
+      : '匿名模式：配置只存这台手机（Key 是明文），换设备就没了。'}}</view>
+    <button wx:if="{{!logged && wxLogin}}" class="btn mt" bindtap="onLogin">微信登录</button>
+    <view wx:if="{{!logged && !wxLogin}}" class="hint mt">
+      服务器没配 DICE_WX_APPID / DICE_WX_SECRET，先用本机存储；不影响和朋友对战。
+    </view>
+    <button wx:if="{{logged}}" class="btn ghost mt" bindtap="onLogout">退出登录</button>
+  </view>
+
+  <!-- 模型 / 人机配置 -->
+  <view class="card">
+    <view class="row">
+      <view class="h2">我的座位</view>
+      <text class="chip" bindtap="onNew">+ 新建</text>
+    </view>
+    <view wx:if="{{!configs.length}}" class="empty">还没有配置。新建一条，上桌时直接选它。</view>
+    <view class="cfgline" wx:for="{{configs}}" wx:key="id">
+      <view class="row">
+        <view class="grow">
+          <view>{{item.name}}</view>
+          <view class="hint">{{item.sub}}</view>
+        </view>
+        <text class="chip ghost" data-id="{{item.id}}" bindtap="onEdit">改</text>
+        <text class="chip dead" data-id="{{item.id}}" bindtap="onDrop">删</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 编辑表单 -->
+  <view class="card" wx:if="{{editing}}">
+    <view class="h2">{{form.id ? '改配置' : '新建配置'}}</view>
+
+    <view class="lab mt">类型</view>
+    <view class="chips">
+      <view class="chipbtn {{form.kind === item.id ? 'on' : ''}}" wx:for="{{kinds}}" wx:key="id"
+            data-k="{{item.id}}" bindtap="onPickKind">{{item.label}}</view>
+    </view>
+
+    <view class="field mt">
+      <text class="lab">名字（上桌时显示这个）</text>
+      <input class="input" value="{{form.name}}" maxlength="40" bindinput="onField" data-f="name" />
+    </view>
+
+    <block wx:if="{{form.kind === 'llm'}}">
+      <view class="field">
+        <text class="lab">Base URL（到 /v1 为止，不要带 /chat/completions）</text>
+        <input class="input" value="{{form.baseUrl}}" placeholder="https://api.example.com/v1" bindinput="onField" data-f="baseUrl" />
+      </view>
+      <view class="field">
+        <text class="lab">模型名</text>
+        <input class="input" value="{{form.model}}" placeholder="gpt-4o-mini / qwen-max …" bindinput="onField" data-f="model" />
+      </view>
+      <view class="field">
+        <text class="lab">API Key（留空 = 不改）</text>
+        <input class="input" value="{{form.apiKey}}" password placeholder="{{form.hasKey ? '已存：' + form.keyMask : 'sk-...'}}" bindinput="onField" data-f="apiKey" />
+      </view>
+      <view class="lab">思考强度</view>
+      <view class="chips">
+        <view class="chipbtn {{form.effort === item.id ? 'on' : ''}}" wx:for="{{efforts}}" wx:key="id"
+              data-e="{{item.id}}" bindtap="onPickEffort">{{item.label}}</view>
+      </view>
+      <view class="field mt">
+        <text class="lab">必胜秘诀（可选，会拼进它的系统提示）</text>
+        <textarea class="textarea" value="{{form.guideText}}" maxlength="2000" bindinput="onField" data-f="guideText" />
+      </view>
+    </block>
+
+    <block wx:if="{{form.kind === 'bot'}}">
+      <view class="lab mt">内置人机</view>
+      <view class="chips">
+        <view class="chipbtn {{form.bot === item.id ? 'on' : ''}}" wx:for="{{bots}}" wx:key="id"
+              data-b="{{item.id}}" bindtap="onPickBot">{{item.label}}</view>
+      </view>
+      <view class="hint mt">{{botDesc}}</view>
+    </block>
+
+    <view class="acts">
+      <button class="btn primary" bindtap="onSave">存下来</button>
+      <button class="btn ghost" bindtap="onCancel">取消</button>
+    </view>
+    <view wx:if="{{formMsg}}" class="hint mt {{formMsgBad ? 'bad' : 'gold'}}">{{formMsg}}</view>
+  </view>
+
+  <!-- 默认桌规 -->
+  <view class="card">
+    <view class="h2">默认桌规</view>
+    <view class="field mt">
+      <text class="lab">规则集</text>
+      <picker mode="selector" range="{{ruleNames}}" value="{{ruleIndex}}" bindchange="onRule">
+        <view class="input row"><text>{{ruleNames[ruleIndex]}}</text><text class="hint">切换</text></view>
+      </picker>
+    </view>
+    <view class="row">
+      <view class="field grow">
+        <text class="lab">初始血量</text>
+        <input class="input" type="number" value="{{hp}}" bindinput="onHp" />
+      </view>
+      <view class="field grow">
+        <text class="lab">每手时限（秒）</text>
+        <input class="input" type="number" value="{{turnSec}}" bindinput="onTurn" />
+      </view>
+    </view>
+    <view class="row">
+      <view class="grow">
+        <view class="lab">复式</view>
+        <view class="hint">同一副骰子打两把、换座位</view>
+      </view>
+      <switch checked="{{dup}}" color="#e0b878" bindchange="onDup" />
+    </view>
+    <button class="btn mt" bindtap="onSavePrefs">存为默认</button>
+  </view>
+
+  <!-- 服务器地址：上线换域名、临时连朋友的机器，都不用改代码重发版 -->
+  <view class="card">
+    <view class="h2">服务器</view>
+    <view class="hint mt">当前生效：{{liveBase}}</view>
+    <view class="field mt">
+      <text class="lab">改成别的地址（存本机，立即生效）</text>
+      <input class="input" value="{{baseUrlInput}}" placeholder="http://192.168.x.x:8898" bindinput="onBaseUrl" />
+    </view>
+    <view class="row">
+      <button class="btn sm" bindtap="onSaveBaseUrl">保存</button>
+      <button class="btn sm ghost" bindtap="onResetBaseUrl">恢复内置</button>
+    </view>
+  </view>
+
+  <view class="hint foot">
+    <view>服务端：{{baseUrl}}（{{env}}）</view>
+    <view>引擎副本指纹见 miniprogram/vendor/MANIFEST.json，改规则后跑 node scripts/sync-vendor.js。</view>
+  </view>
+</view>

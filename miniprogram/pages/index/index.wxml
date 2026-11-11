@@ -1,0 +1,136 @@
+<view class="page">
+  <view class="hero">
+    <view class="h1">鬼 骰</view>
+    <view class="hint">大话骰 · 微信对战 · 也可以让模型上桌</view>
+  </view>
+
+  <!-- 昵称 + 连接状态：昵称是唯一必填，连不上服务器时在这里直接说清原因 -->
+  <view class="card">
+    <view class="field">
+      <text class="lab">你的昵称（对手看到的）</text>
+      <input class="input" value="{{nick}}" maxlength="24" placeholder="起个名字" bindinput="onNick" />
+    </view>
+    <view class="row">
+      <text class="chip {{pingOk ? 'live' : 'dead'}}">{{pingOk ? '服务器在线' : '连不上服务器'}}</text>
+      <text class="chip">{{env === 'dev' ? '开发环境' : '线上'}}</text>
+      <text class="hint">{{baseUrl}}</text>
+    </view>
+    <view wx:if="{{!pingOk}}" class="hint mt">
+      连不上多半是这三件事：① 电脑上没起 <text class="gold">bash live.sh</text>；
+      ② 开发者工具没勾「不校验合法域名」；③ 地址写成了 127.0.0.1（手机访问不到，要用电脑内网 IP）。
+    </view>
+  </view>
+
+  <!-- 开桌 -->
+  <view class="card">
+    <view class="row">
+      <view class="h2">开一桌</view>
+      <text class="chip">你先坐甲方</text>
+    </view>
+
+    <view class="field mt">
+      <text class="lab">规则集</text>
+      <picker mode="selector" range="{{ruleNames}}" value="{{ruleIndex}}" bindchange="onRule">
+        <view class="input row"><text>{{ruleNames[ruleIndex]}}</text><text class="hint">切换</text></view>
+      </picker>
+    </view>
+
+    <view class="row">
+      <view class="field grow">
+        <text class="lab">初始血量</text>
+        <input class="input" type="number" value="{{hp}}" bindinput="onHp" />
+      </view>
+      <view class="field grow">
+        <text class="lab">每手时限（秒）</text>
+        <input class="input" type="number" value="{{turnSec}}" bindinput="onTurn" />
+      </view>
+    </view>
+
+    <view class="row">
+      <view class="grow">
+        <view class="lab">复式</view>
+        <view class="hint">同一副骰子打两把、换座位，比净胜血</view>
+      </view>
+      <switch checked="{{dup}}" color="#e0b878" bindchange="onDup" />
+    </view>
+
+    <view class="field mt">
+      <text class="lab">乙方（对手）</text>
+      <view class="chips">
+        <view class="chipbtn {{bKind === item.id ? 'on' : ''}}" wx:for="{{bKinds}}" wx:key="id"
+              data-k="{{item.id}}" bindtap="onPickBKind">{{item.label}}</view>
+      </view>
+      <picker wx:if="{{bKind === 'bot'}}" mode="selector" range="{{botNames}}" value="{{botIndex}}" bindchange="onBotIdx">
+        <view class="input row mt8"><text>{{botNames[botIndex]}}</text><text class="hint">换</text></view>
+      </picker>
+      <picker wx:if="{{bKind === 'llm'}}" mode="selector" range="{{cfgNames}}" value="{{cfgIndex}}" bindchange="onCfgIdx">
+        <view class="input row mt8"><text>{{cfgNames[cfgIndex]}}</text><text class="hint">换</text></view>
+      </picker>
+      <picker wx:if="{{bKind === 'preset'}}" mode="selector" range="{{presetNames}}" value="{{presetIndex}}" bindchange="onPresetIdx">
+        <view class="input row mt8"><text>{{presetNames[presetIndex]}}</text><text class="hint">换</text></view>
+      </picker>
+      <view wx:if="{{bKind === 'llm' && !cfgNames.length}}" class="hint mt">还没有模型配置：去「我的 → 我的座位 → 新建」加一条，这里就能选。</view>
+      <view wx:if="{{bKind === 'preset' && !presetNames.length}}" class="hint mt">服务器没配平台预设模型，改用自己的模型或内置人机。</view>
+      <view wx:if="{{bKind === 'open'}}" class="hint mt">留空位等朋友：开桌后发小程序卡片给他，点一下就坐进来。</view>
+    </view>
+
+    <view class="field mt">
+      <text class="lab">桌口令（可选，留空则拿到房号就能进）</text>
+      <input class="input" value="{{pass}}" maxlength="24" password placeholder="可选" bindinput="onPass" />
+    </view>
+
+    <button class="btn primary mt" loading="{{busy}}" bindtap="onCreate">开桌</button>
+    <view wx:if="{{msg}}" class="hint mt {{msgBad ? 'bad' : 'gold'}}">{{msg}}</view>
+  </view>
+
+  <!-- 加入 -->
+  <view class="card">
+    <view class="h2">进朋友的桌</view>
+    <view class="field mt">
+      <text class="lab">房号</text>
+      <input class="input" value="{{code}}" maxlength="8" placeholder="六位房号，或直接点朋友发的小程序卡片" bindinput="onCode" />
+    </view>
+    <view class="field">
+      <text class="lab">口令（房主设了才要填）</text>
+      <input class="input" value="{{joinPass}}" maxlength="24" password placeholder="没有就留空" bindinput="onJoinPass" />
+    </view>
+    <button class="btn mt" loading="{{joining}}" bindtap="onJoin">入座 / 观战</button>
+    <view class="hint mt">空位会先给你坐；两座都满了就以观战身份进去（看不到任何人的骰子）。</view>
+  </view>
+
+  <!-- 公开桌 -->
+  <view class="card">
+    <view class="row">
+      <view class="h2">正在等人的桌</view>
+      <text class="chip ghost" bindtap="loadRooms">刷新</text>
+    </view>
+    <view wx:if="{{!rooms.length}}" class="empty">暂时没有公开桌</view>
+    <view wx:for="{{rooms}}" wx:key="code" class="row roomline">
+      <view class="grow">
+        <view><text class="gold">{{item.code}}</text> <text class="hint">{{item.title}}</text></view>
+        <view class="hint">{{item.rulesId}} · {{item.hpMax}} 血 · {{item.seatsText}}</view>
+      </view>
+      <button class="btn sm" data-code="{{item.code}}" bindtap="onQuickJoin">进</button>
+    </view>
+  </view>
+
+  <!-- 战绩 -->
+  <view class="card">
+    <view class="row">
+      <view class="h2">最近打完的</view>
+      <text class="chip ghost" bindtap="loadMatches">刷新</text>
+    </view>
+    <view wx:if="{{!matches.length}}" class="empty">还没有战绩</view>
+    <view wx:for="{{matches}}" wx:key="idx" class="row roomline">
+      <view class="grow">
+        <view class="hint">{{item.time}} · {{item.rulesName}}</view>
+        <view>{{item.aName}} <text class="hint">vs</text> {{item.bName}}</view>
+      </view>
+      <text class="chip {{item.win ? 'on' : ''}}">{{item.resultText}}</text>
+    </view>
+  </view>
+
+  <view class="foot hint">
+    规则与结算都在服务端跑，客户端只拿到自己那份视角；对手的骰子在你开盅之前不会出现在这台手机上。
+  </view>
+</view>

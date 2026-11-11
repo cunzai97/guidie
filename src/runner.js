@@ -49,7 +49,15 @@ async function runMatch(players, rng, opts = {}) {
   const roundStreaks = { A: 0, B: 0 };
   let ungraded = false;
   let turns = 0;
-  const ev = x => events.push({ ...metaBase, round: m.roundNo, step: turns || 0, ...x });
+  // 外部事件钩子（实时对战服务用）：默认空函数，跑批行为逐字不变。
+  // ev 仍先写入本地 events[]，跑批与历史口径不受影响；钩子只额外旁路一份给服务层推流。
+  const onEvent = opts.onEvent || (() => {});
+  const ev = x => {
+    const e = { ...metaBase, round: m.roundNo, step: turns || 0, ...x };
+    events.push(e);
+    try { onEvent(e); } catch (e2) { /* 推流失败绝不影响对局本身 */ }
+    return e;
+  };
 
   while (!m.over) {
     E.startRound(m, rng);

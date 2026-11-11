@@ -43,6 +43,7 @@ const BUILTIN = [
 ];
 const DEFAULT_SETTINGS = {
   target:10, speed:400, variant:'plain', summary:true, reflect:4, god:false, strict:true, maxRounds:60,
+  reflectTokens:2048,      // 深度反思的独立输出预算：不跟模型的 maxTokens 走，免得一次反思卡住整局
   defaultMaxTokens:8192,   // 只是「新建模型 / 配置缺项」时的缺省；每个模型自己的预算始终独立可改
   defaultEffort:'medium',  // 同上：新建模型 / 配置缺项时的缺省思考强度（off/low/medium/high）
   theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
@@ -524,6 +525,7 @@ function syncQuick(){
   $('qTarget').value = String(state.settings.target);
   $('qSpeed').value = String(state.settings.speed);
   if ($('qReflect')) $('qReflect').value = String(state.settings.reflect == null ? 4 : state.settings.reflect);
+  if ($('qReflectTokens')) $('qReflectTokens').value = String(REFLECT_TOKENS());
   // 提示词臂下拉：按 context.js 的注册表生成，以后加新臂不用改这里
   if ($('qVariant')) {
     $('qVariant').innerHTML = Object.keys(C.ARMS).map(id =>
@@ -1230,25 +1232,42 @@ async function requestSummary(w, msgs, tag){
   return text;
 }
 // 双方复盘互不依赖：并发发出，等两份都回来再一起写回上下文，避免任何一方读到对方这轮的复盘。
-// 连败深度反思：与轮末复盘同一套调用路径，但预算更足、单次不重写。
-// 结果写进 state.reflect.text[w]，此后该席位的 system 提示会带上这一段（拼接，不替代规则与秘诀）。
+// 连败反思分两级，预算独立（不跟 preset 的 maxTokens 走——一个卡住整局的步骤不能继承 16k 生成预算）：
+//   1) 深度反思：独立预算、单次不重试（重试等于把等待翻倍，宁可退化）
+//   2) 正文为空（预算全烧在思考里）→ 退出深度反思，改走普通反思：一段话、更小预算
+//   3) 还没有 → 用本局最近一次复盘兜底 → 再没有就跳过，绝不卡住对局
+const REFLECT_TOKENS = () => Math.round(+((state.settings && state.settings.reflectTokens) || 2048));
+const REFLECT_PLAIN_TOKENS = 512;
+async function reflectCall(w, msgs, budget, label){
+  const p = state.players[w];
+  try {
+    const out = await callWithRetry(Object.assign({}, p, { thinking:false, effort:'off' }), msgs, null, w, 'reflect', budget, null, 1);
+    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
+    if (out.finish === 'length') thinkNote(w, label + '被 max_tokens 截断');
+    return cleanSum(out.raw);
+  } catch (e) {
+    thinkEnd(w, '失败');
+    thinkNote(w, label + '请求失败：' + String(e.message || e).slice(0, 80));
+    return '';
+  }
+}
 async function requestReflect(w, streakN){
   const p = state.players[w];
   if (!p || p.kind === 'bot') return '';
-  const msgs = C.buildReflectPrompt({ streak: streakN, seat: w, history: state.G.history });
   thinkStart(w, '连败反思');
-  thinkNote(w, '连输 ' + streakN + ' 轮 · 写深度反思（' + (p.alias) + '）');
-  let text = '';
-  try {
-    const out = await callWithRetry(Object.assign({}, p, { thinking:false, effort:'off' }), msgs, null, w, 'reflect',
-      Math.max(p.maxTokens || 0, state.settings.reflectTokens || 8192), null, 2);
-    text = cleanSum(out.raw) || cleanSum(out.reason);
-    thinkEnd(w, out.ms + 'ms · ' + (out.tokens || '—') + ' tok');
-    if (out.finish === 'length') thinkNote(w, '输出被 max_tokens 截断（反思已保存，可调大预算）');
-  } catch (e) {
-    thinkEnd(w, '失败');
-    thinkNote(w, '反思请求失败：' + String(e.message || e).slice(0, 80));
+  thinkNote(w, '连输 ' + streakN + ' 轮 · 写深度反思（' + p.alias + ' · 预算 ' + REFLECT_TOKENS() + ' tok）');
+  let text = await reflectCall(w, C.buildReflectPrompt({ streak:streakN, seat:w, history:state.G.history }),
+    REFLECT_TOKENS(), '深度反思');
+  if (!text) {
+    thinkNote(w, '深度反思没写出正文（预算耗在思考里），退出深度反思 → 普通反思');
+    text = await reflectCall(w, C.buildPlainReflectPrompt({ streak:streakN, seat:w, history:state.G.history }),
+      REFLECT_PLAIN_TOKENS, '普通反思');
   }
+  if (!text) {
+    const last = ((state.memos && state.memos[w]) || []).slice(-1)[0];
+    if (last && last.text) { text = last.text; thinkNote(w, '普通反思也没正文 → 用本局最近一次复盘兜底'); }
+  }
+  if (!text) thinkNote(w, '反思拿不到正文，本次跳过（对局继续）');
   return text;
 }
 function noteReflectStreak(res){
@@ -1331,6 +1350,7 @@ async function afterOpen(res, forfeit){
 }
 async function finishMatch(){
   state.running = false;
+  clearCheckpoint();          // 这局打完了，存档作废
   const w = state.G.winner, score = state.G.hp.A + ' : ' + state.G.hp.B;
   setState('对局结束', (w ? seatLabel(w) + ' 获胜' : '平局') + ' · ' + score, 'done');
   flash('对局结束 · ' + (w ? seatLabel(w) + ' 获胜' : '平局'));
@@ -1456,6 +1476,118 @@ async function renderRank(){
   $('rankEffort').onchange = e => { state.rankEffort = e.target.value; renderRank(); };
 }
 
+/* ---------------- 断点续跑：整局存档 ----------------
+ * 每落一手（stepOnce 完整返回）就把整份局面覆写到服务端 runs/arena-state.json。
+ * 刷新页面 / 重启服务 / 关掉浏览器之后再打开，自动从存档接着打，不用重打整局。
+ * 只存「干净落点」：一手已落地、该轮结算与复盘都已完成 —— 恢复后下一步就是对方的回合。
+ * 一局结束或主动重新布阵时删档。
+ */
+const STATE_API = '/api/arena/state';
+function seedOf(str){
+  let h = 0x811c9dc5;
+  for (let i = 0; i < String(str).length; i++) { h ^= String(str).charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h >>> 0;
+}
+function arenaSaveState(){
+  const G = state.G;
+  if (!G || !state.players || !state.started) return null;
+  const L = state.logs || {};
+  const lg = w => (L[w] && L[w].exportState) ? L[w].exportState() : null;
+  return {
+    v: 3, t: Date.now(),
+    runId: state.runId, gameNo: state.gameNo, running: !!state.running,
+    god: !!state.god, seat: state.seat, settings: state.settings, players: state.players,
+    G: {
+      hpMax: G.hpMax, hp: G.hp, losses: G.losses || { A:0, B:0 }, roundNo: G.roundNo,
+      over: !!G.over, winner: G.winner || null, capped: !!G.capped,
+      firstBidder: G.firstBidder || 'A', lastLoser: G.lastLoser || null,
+      rulesId: (G.rules && G.rules.id) || '', rules: G.rules,
+      history: (G.history || []).slice(),
+      round: G.round ? {
+        no: G.round.no, dice: G.round.dice, turn: G.round.turn, seq: (G.round.seq || []).slice(),
+        bid: G.round.bid || null, over: !!G.round.over, result: G.round.result || null,
+        revealed: !!G.round.revealed, zhai: !!G.round.zhai,
+      } : null,
+    },
+    cursor: state.cursor, memos: state.memos, ownMemo: state.ownMemo, lastAct: state.lastAct,
+    reflect: state.reflect, stats: state.stats,
+    logs: { A: lg('A'), B: lg('B') },
+  };
+}
+function arenaRestoreState(sv){
+  if (!sv || sv.v !== 3 || !sv.G || !sv.players || !sv.G.round) return false;
+  if (!sv.players.A || !sv.players.B) return false;
+  state.settings = normalizeSettings(sv.settings || {});
+  state.seat = Object.assign({ A:'', B:'' }, sv.seat || {});
+  state.runId = sv.runId || ''; state.gameNo = sv.gameNo || 0;
+  state.god = !!sv.god || !!state.settings.god;
+  state.players = sv.players;
+  // 机器人实例按局号重建：同一局的随机数起点可由 runId 复现，恢复后不会跳变
+  state.bots = { A:null, B:null };
+  for (const w of ['A','B']) {
+    const p = state.players[w];
+    if (p && p.kind === 'bot' && BOT) state.bots[w] = BOT.makeBot(p.bot, E.mulberry32(seedOf(state.runId + ':' + w + ':' + state.gameNo)));
+  }
+  const rules = allRules().find(r => r.id === sv.G.rulesId) || RS.normalize(sv.G.rules || 'classic');
+  state.G = {
+    hpMax: sv.G.hpMax, hp: Object.assign({}, sv.G.hp), losses: Object.assign({ A:0, B:0 }, sv.G.losses || {}),
+    roundNo: sv.G.roundNo, over: !!sv.G.over, winner: sv.G.winner || null, capped: !!sv.G.capped,
+    firstBidder: sv.G.firstBidder || 'A', lastLoser: sv.G.lastLoser || null,
+    rules, history: (sv.G.history || []).slice(),
+    round: Object.assign({}, sv.G.round, { rules }),
+  };
+  state.cursor = sv.cursor || { A:null, B:null };
+  state.memos = sv.memos || { A:[], B:[] };
+  state.ownMemo = sv.ownMemo || { A:[], B:[] };
+  state.lastAct = sv.lastAct || { A:'—', B:'—' };
+  state.reflect = sv.reflect || { text:{ A:'', B:'' }, streak:{ A:0, B:0 }, round:{ A:null, B:null } };
+  state.stats = { A:Object.assign(newStats(), (sv.stats && sv.stats.A) || {}),
+                  B:Object.assign(newStats(), (sv.stats && sv.stats.B) || {}) };
+  const lim = state.settings.ctxLimit || 32768;
+  const rebuild = x => (x && Array.isArray(x.hist) && CXLOG) ? CXLOG.create({ state:x, ctxLimit:lim }) : null;
+  state.logs = { A: rebuild(sv.logs && sv.logs.A), B: rebuild(sv.logs && sv.logs.B) };
+  state.started = true; state.running = false; state.busy = false; state.pendingReset = false;
+  return true;
+}
+let savingState = false;
+async function saveCheckpoint(){
+  const snap = arenaSaveState();
+  if (!snap || savingState) return;
+  savingState = true;
+  try {
+    await fetch(STATE_API, { method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ state: snap }) });
+  } catch (e) { /* 存档失败不影响对局 */ }
+  finally { savingState = false; }
+}
+function clearCheckpoint(){
+  try { const p = fetch(STATE_API, { method:'DELETE' }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+async function restoreCheckpoint(){
+  let sv = null;
+  try {
+    const r = await fetch(STATE_API);
+    if (r.ok) sv = (await r.json()).state;
+  } catch (e) { return false; }
+  if (!arenaRestoreState(sv)) return false;
+  const G = state.G;
+  $('setupBar').classList.add('locked');
+  $('btnGod').classList.toggle('on', state.god);
+  $('reveal').hidden = true;
+  syncQuick(); renderDice('A', true); renderDice('B', true);
+  render(); renderStats(); syncButtons();
+  addLog('rd', '断点续跑 · 从存档恢复：第 ' + G.roundNo + ' 轮 · 血量 ' + G.hp.A + ' : ' + G.hp.B
+    + ' · ' + esc(state.players.A.alias) + ' vs ' + esc(state.players.B.alias));
+  if (G.round && !G.round.over) {
+    addLog('muted', '轮到你：' + seatLabel(G.round.turn) + (G.round.bid ? ' 回应「' + G.round.bid.count + ' 个 ' + G.round.bid.face + '」' : ' 首喊'));
+  }
+  const resumed = !!sv.running;
+  setState(G.over ? '对局结束' : '已恢复对局', '第 ' + G.roundNo + ' 轮 · 血量 ' + G.hp.A + ' : ' + G.hp.B, G.over ? 'done' : 'live');
+  flash('已从存档恢复');
+  if (resumed && !G.over) { await sleep(400); loop(); }
+  return true;
+}
+
 /* ---------------- 一步 / 连播 ---------------- */
 async function stepOnce(){
   const G = state.G;
@@ -1540,8 +1672,10 @@ async function runStep(){
   finally {
     state.busy = false;
     // 「重新布阵」在模型思考中途被点击：等这一手彻底落地后再清空，避免异步写 null 局面
-    if (state.pendingReset) { doReset(); return; }
+    if (state.pendingReset) { doReset(true); return; }
     render();
+    // 干净落点：这一手连同该轮结算/复盘都已落地 → 存一次断点
+    if (state.G && !state.G.over && !state.pendingReset) saveCheckpoint();
   }
   return ok;
 }
@@ -1616,6 +1750,7 @@ async function startMatch(){
   $('btnGod').classList.toggle('on', state.god);
   $('reveal').hidden = true;
   syncQuick(); syncButtons(); render(); renderStats();
+  saveCheckpoint();
   await loop();
 }
 function resetTable(){
@@ -1623,9 +1758,10 @@ function resetTable(){
     state.pendingReset = true; state.running = false;
     flash('当前一手结束后自动重新布阵…'); syncButtons(); return;
   }
-  doReset();
+  doReset(true);
 }
-function doReset(){
+function doReset(byUser){
+  if (byUser) clearCheckpoint();   // 主动重新布阵才算放弃存档；页面初始化不算
   state.pendingReset = false;
   state.running = false; state.started = false; state.G = null; state.players = null; state.busy = false;
   // 逐手 / 逐轮的局内上下文随牌桌一起清掉；下一局从空白开始。
@@ -1708,6 +1844,10 @@ function bindAll(){
   }
   if ($('qVariant')) $('qVariant').onchange = e => { state.settings.variant = e.target.value; syncQuick(); saveStore(); };
   if ($('qReflect')) $('qReflect').onchange = e => { state.settings.reflect = +e.target.value; syncQuick(); saveStore(); };
+  if ($('qReflectTokens')) $('qReflectTokens').onchange = e => {
+    state.settings.reflectTokens = clamp(e.target.value, 256, 8192, 2048);
+    e.target.value = String(state.settings.reflectTokens); syncQuick(); saveStore();
+  };
   for (const id of ['qRules','sRules']) {
     if ($(id)) $(id).onchange = e => setActiveRules(e.target.value);
   }
@@ -1743,7 +1883,9 @@ async function init(){
   syncQuick(); bindSettingsValues(); bindAll();
   renderPresets(); renderPicks(); renderStorage();
   state.god = !!state.settings.god;
-  resetTable();
+  doReset(false);        // 初始化铺空桌：不能走「用户重开」那条路，否则会先把存档删了
+  // 上一次没打完的局（刷新/重启/关页面）→ 直接接着打，不重开
+  if (!(await restoreCheckpoint())) { setState('待布阵', '选择双方模型后开战', ''); }
 }
 
 // 纯逻辑导出，便于 Node 侧离线验证；浏览器里由 init 启动。
@@ -1753,7 +1895,7 @@ const ArenaCore = { normalizePreset, normalizeSettings, normalizeEffort, actText
   BUILTIN, DEFAULT_SETTINGS, EFFORTS,
   // 机器人席位（'bot:<spec>'）解析 + 对局驱动，供 Node 侧测试直接调用
   BOT_PREFIX, isBotId, botSeat, playerById, decideBot, noteReflectStreak, requestReflect,
-  state, startMatch, doReset, init };
+  state, startMatch, doReset, init, arenaSaveState, arenaRestoreState, saveCheckpoint, clearCheckpoint, restoreCheckpoint };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaCore;
 else root.ArenaCore = ArenaCore;
 

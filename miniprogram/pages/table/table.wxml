@@ -1,0 +1,168 @@
+<view class="page table">
+
+  <!-- 顶栏：房号 / 轮次 / 连接状态 -->
+  <view class="topbar">
+    <text class="code">{{code}}</text>
+    <text class="chip">{{roundText}}</text>
+    <text class="chip {{netClass}}">{{netText}}</text>
+    <text wx:if="{{role === 'spec'}}" class="chip">观战</text>
+  </view>
+
+  <!-- ============ 大厅 ============ -->
+  <block wx:if="{{phase === 'lobby'}}">
+    <view class="card">
+      <view class="row">
+        <view class="h2">{{room.title || '这一桌'}}</view>
+        <text class="chip {{room.hasPass ? 'zhai' : ''}}">{{room.hasPass ? '有口令' : '无口令'}}</text>
+      </view>
+      <view class="hint mt">{{room.rulesName}} · {{room.hpMax}} 血 · 每手 {{turnSec}} 秒 · {{room.duplicate ? '复式（同骰换座打两把）' : '单局'}}</view>
+    </view>
+
+    <view class="card" wx:for="{{seatCards}}" wx:key="seat">
+      <view class="row">
+        <view class="h2">{{item.title}} <text class="chip" wx:if="{{item.isMe}}">你</text></view>
+        <text class="chip {{item.connected ? 'live' : 'ghost'}}">{{item.stateText}}</text>
+      </view>
+      <view class="mt">{{item.nick}}</view>
+      <view class="hint">{{item.meta}}</view>
+    </view>
+
+    <view class="card">
+      <button class="btn primary" bindtap="onStart" disabled="{{!canStart}}">开局</button>
+      <button class="btn mt" open-type="share">发给朋友（微信卡片）</button>
+      <view class="hint mt">朋友点卡片就直接坐进空位；你也可以把房号 <text class="gold">{{code}}</text> 念给他，从「进朋友的桌」进来。</view>
+      <view class="divider"></view>
+      <view class="row">
+        <text class="hint">换个座位：</text>
+        <button class="btn sm ghost" bindtap="onSwitchSeat">坐另一个空位</button>
+      </view>
+    </view>
+  </block>
+
+  <!-- ============ 对局 ============ -->
+  <block wx:else>
+    <!-- 血量 -->
+    <view class="hpwrap">
+      <view class="hpbox">
+        <view class="row"><text class="hpn">{{oppName}}</text><text class="hint">{{hpOpp}}/{{hpMax}}</text></view>
+        <view class="hpbar"><view class="hpfill opp" style="width:{{hpOppPct}}%"></view></view>
+        <view class="hint">{{oppMeta}}</view>
+      </view>
+      <view class="hpbox">
+        <view class="row"><text class="hpn">{{meName}}</text><text class="hint">{{hpMe}}/{{hpMax}}</text></view>
+        <view class="hpbar"><view class="hpfill" style="width:{{hpMePct}}%"></view></view>
+        <view class="hint">{{meMeta}}</view>
+      </view>
+    </view>
+
+    <!-- 对手的骰子：开盅前只有背面 -->
+    <view class="card flat">
+      <view class="row">
+        <text class="lab">对手的骰子</text>
+        <text class="chip {{oppRevealed ? 'live' : 'ghost'}}">{{oppRevealed ? '已亮牌' : '盖着'}}</text>
+      </view>
+      <view class="dice mt">
+        <view class="die {{oppRevealed ? '' : 'back'}}" wx:for="{{oppDice}}" wx:key="index" wx:for-item="d">
+          <view class="dot {{on ? 'on' : ''}}" wx:for="{{d.cells}}" wx:key="index" wx:for-item="on"></view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 我的骰子 -->
+    <view class="card" wx:if="{{role !== 'spec'}}">
+      <view class="row">
+        <text class="lab">我的骰子</text>
+        <text class="hint">{{countsText}}</text>
+      </view>
+      <view class="dice mt">
+        <view class="die" wx:for="{{myDice}}" wx:key="index" wx:for-item="d">
+          <view class="dot {{on ? (d.wild ? 'wild-on' : 'on') : ''}}" wx:for="{{d.cells}}" wx:key="index" wx:for-item="on"></view>
+        </view>
+      </view>
+      <view class="hint mt" wx:if="{{zhai}}">这一轮是<text class="gold">斋</text>：1 只算 1，不再是万能。</view>
+      <view class="hint mt" wx:else>还没进斋：1 是万能点数。</view>
+    </view>
+
+    <!-- 当前喊价 -->
+    <view class="bidbox">
+      <text class="bidtext">{{bidText}}</text>
+      <text class="bidsub">{{bidSub}}</text>
+    </view>
+
+    <!-- 行动面板 -->
+    <view class="card" wx:if="{{myTurn && !submitted}}">
+      <block wx:if="{{counts.length}}">
+        <view class="lab">个数</view>
+        <scroll-view scroll-x class="chips">
+          <view class="chipbtn {{item === countSel ? 'on' : ''}}" wx:for="{{counts}}" wx:key="index"
+                data-c="{{item}}" bindtap="onPickCount">{{item}} 个</view>
+        </scroll-view>
+
+        <view class="lab mt">点数 <text class="hint">（2&lt;3&lt;4&lt;5&lt;6&lt;1）</text></view>
+        <view class="faces">
+          <view class="facebtn {{item.on ? 'on' : ''}} {{item.enabled ? '' : 'off'}}" wx:for="{{faces}}" wx:key="face"
+                data-f="{{item.face}}" bindtap="onPickFace">{{item.face}}</view>
+        </view>
+
+        <view class="lab mt">这一手怎么走</view>
+        <view class="chips">
+          <view class="chipbtn {{item.id === modeSel ? 'on' : ''}}" wx:for="{{modeOpts}}" wx:key="id"
+                data-m="{{item.id}}" bindtap="onPickMode">{{item.label}}</view>
+        </view>
+
+        <view class="preview">落子：<text class="gold">{{preview}}</text></view>
+      </block>
+      <view wx:else class="hint">已经无价可喊，只能开盅。</view>
+
+      <view class="acts">
+        <button class="btn primary" bindtap="onGo" disabled="{{!counts.length}}">走这一步</button>
+        <button class="btn" wx:if="{{canOpen}}" bindtap="onOpenTap">开盅</button>
+        <button class="btn danger" wx:if="{{canSlash}}" bindtap="onSlash">劈</button>
+      </view>
+      <view class="hint mt">倒计时 {{leftSec}}s，超时按桌规自动接手。</view>
+    </view>
+
+    <view class="waiting" wx:elif="{{!over && !submitted}}">
+      <text>等对手落子…</text>
+    </view>
+    <view class="waiting" wx:elif="{{submitted}}">
+      <text>已提交，等这一手落地。</text>
+    </view>
+
+    <!-- 流水 -->
+    <view class="card flat">
+      <view class="lab">本轮喊价</view>
+      <view wx:if="{{!seqList.length}}" class="empty">还没人喊价</view>
+      <view class="seqline {{item.mine ? 'mine' : ''}}" wx:for="{{seqList}}" wx:key="index" wx:for-item="item">{{item.text}}</view>
+
+      <view class="divider"></view>
+      <view class="lab">开盅记录</view>
+      <view wx:if="{{!histList.length}}" class="empty">还没开过盅</view>
+      <view class="histline" wx:for="{{histList}}" wx:key="index" wx:for-item="item">
+        <view class="histhd">{{item.head}}</view>
+        <view class="hint">{{item.body}}</view>
+      </view>
+    </view>
+
+    <view class="row mt">
+      <button class="btn sm danger" wx:if="{{role !== 'spec' && !over}}" bindtap="onResign">认输</button>
+      <button class="btn sm ghost" open-type="share">邀人</button>
+    </view>
+  </block>
+
+  <!-- ============ 结算 ============ -->
+  <view class="overlay" wx:if="{{over}}">
+    <view class="overbox">
+      <view class="h1">{{overTitle}}</view>
+      <view class="hint mt">{{overSub}}</view>
+      <view class="divider"></view>
+      <view class="histline" wx:for="{{overLines}}" wx:key="index" wx:for-item="item">{{item}}</view>
+      <view class="acts mt">
+        <button class="btn primary" wx:if="{{role !== 'spec'}}" bindtap="onAgain">再来一局</button>
+        <button class="btn ghost" bindtap="onLeave">离开</button>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{msg}}" class="toast {{msgBad ? 'bad' : ''}}">{{msg}}</view>
+</view>

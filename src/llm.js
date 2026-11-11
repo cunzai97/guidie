@@ -66,13 +66,16 @@ function makeLLMPlayer(cfg, log = () => {}) {
     name, baseUrl, model, apiKey = null,
     thinking = false, effort = (cfg.thinking ? 'high' : 'off'), maxTokens = 8192, temperature = 0.7,
     timeoutMs = 300000, connRetries = 4, maxAsks = 3,
-    context = 'chat', prompt = null, rules = 'classic',
-    reflectTokens = 16384, reflectEffort = 'high',   // 连败深度反思的写作/思考预算
+    context = 'chat', prompt = null, guideText = null, rules = 'classic',
+    reflectTokens = 2048, reflectEffort = 'off',     // 连败深度反思的写作预算（独立于 maxTokens；不叠思考，避免预算全烧在思维链里）
     summaryTokens = 8192,                            // 轮末复盘的输出预算（复盘是跨轮资产，不要按小预算给）
     ctxLimit = 32768,                                // 上下文窗口（token）：消息流到 80% 触发复盘压缩
   } = cfg;
   const RS = require('./dice-rulesets.js');
   const RULE = RS.normalize(rules);
+  // 自定义秘诀（实时对战平台用）：玩家填的策略段注册成一个提示词臂，id 由文本哈希得出；
+  // 除了策略段，规则文本 / 输出格式 / 上下文管线与跑批逐字同一套，prompt_hash 自然把它计入指纹。
+  const armId = guideText ? C.customArmId(guideText) : prompt;
 
   // 持久对话状态（每局 reset）
   // chat 模式：消息流交给 ctxlog 管（system 一次写定 / 逐手 append / 轮末整轮换成一条复盘 /
@@ -166,14 +169,14 @@ function makeLLMPlayer(cfg, log = () => {}) {
   // 上下文逐手照抄，放大成整局判负（实测：game2 一次回声 → 5 轮连判）。判负也只留一条中性记录。
   async function decideChat(match, who) {
     // system 一局只写一次：连败反思也不再改它（反思作为一条 assistant 记忆追加/取代历史）
-    if (!sys) sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE });
+    if (!sys) sys = C.buildSystem(match.hpMax, { variant: armId, rules: RULE });
     if (!chatLog) chatLog = CX.create({ system: sys, ctxLimit });
     if (chatLog.round() !== match.roundNo) {
       chatLog.beginRound(match.roundNo);
       chatLog.compactIfNeeded();          // 只在超阈值时动作（80%），低频大改
       if (chatLog.snapshot()[0].content !== sys) { /* system 永不变，占位保护 */ }
     }
-    const turn = C.buildTurn(match, who, cursor, { variant: prompt, rules: RULE });
+    const turn = C.buildTurn(match, who, cursor, { variant: armId, rules: RULE });
     cursor = turn.next;
     chatLog.appendUser(turn.text);        // 这一手的新事实：只追加
     const attempts = [];
@@ -210,8 +213,8 @@ function makeLLMPlayer(cfg, log = () => {}) {
 
   // 摘要链模式：轮内逐字工作记忆（working）+ 跨轮压缩笔记链（backbone）。重试脚手架同样不入 working。
   async function decideMemory(match, who) {
-    if (!sys) sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
-    const turn = C.buildTurn(match, who, cursor, { noHistory: true, variant: prompt, rules: RULE });   // 逐字局史由 backbone 笔记携带，不在此堆积
+    if (!sys) sys = C.buildSystem(match.hpMax, { variant: armId, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
+    const turn = C.buildTurn(match, who, cursor, { noHistory: true, variant: armId, rules: RULE });   // 逐字局史由 backbone 笔记携带，不在此堆积
     cursor = turn.next;
     working.push({ role: 'user', content: turn.text });
     const base = [{ role: 'system', content: sys }, ...backbone, ...working];
@@ -251,9 +254,9 @@ function makeLLMPlayer(cfg, log = () => {}) {
   // （纯压缩，真值由 harness 另存供保真度对照）。
   async function summarize(match, who, result, meta) {
     if (meta) callKey = { ...meta };
-    if (!sys) sys = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
+    if (!sys) sys = C.buildSystem(match.hpMax, { variant: armId, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
     const roundNo = match.roundNo;
-    const summaryPrompt = C.buildSummaryPrompt(match, who, result, { variant: prompt, rules: RULE });
+    const summaryPrompt = C.buildSummaryPrompt(match, who, result, { variant: armId, rules: RULE });
     if (context === 'chat' && chatLog) {
       // 复盘 = 模型自己的输出：让它看自己的消息流，再追加一条"写复盘"的指令。
       // 拿到复盘后整轮逐手原文被这一条复盘取代（finalizeRound），下一轮从同一前缀继续 → 缓存命中。
@@ -296,8 +299,8 @@ function makeLLMPlayer(cfg, log = () => {}) {
 
   // 快照模式（旧行为，对比臂）
   async function decideSnapshot(match, who, ownMemo) {
-    const sysS = C.buildSystem(match.hpMax, { variant: prompt, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
-    const uopts = { ownMemo: ownMemo || [], variant: prompt, rules: RULE };
+    const sysS = C.buildSystem(match.hpMax, { variant: armId, rules: RULE, reflection: reflection ? { streak: reflectStreak, text: reflection } : null });
+    const uopts = { ownMemo: ownMemo || [], variant: armId, rules: RULE };
     let user = C.buildUser(match, who, uopts);
     const attempts = [];
     for (let ask = 1; ask <= maxAsks; ask++) {
@@ -326,12 +329,38 @@ function makeLLMPlayer(cfg, log = () => {}) {
   /* 局内连轮深度反思：runner 在局内连续输掉 N 轮后调用。
    * 输入=本局进行到现在的逐轮完整记录（双方真实手牌/喊价/被质疑手/结算）+ 连输轮数；
    * 输出=模型自己写的反思，立刻取代本局此前的轮末总结与系统提示里的策略建议，下一轮起生效。
-   * 给足写作预算（reflectTokens）与思考预算（reflectEffort），单次调用，不重写不兜底。 */
+   * 预算独立于 preset 的 maxTokens（reflectTokens）：卡住整局的步骤不能继承 16k 生成预算。
+   * 深度反思没写出正文（预算全烧在思考里）时，退到普通反思（一段话、小预算），再不行就用
+   * 最近一次轮末复盘兜底，最后才跳过——任何一个环节都不重试、不阻塞。 */
   async function reflect(info = {}) {
     const streakN = info.streak || 0;
-    const msg = C.buildReflectPrompt({ streak: streakN, seat: info.seat || 'A', history: info.history || [] });
-    const out = await callMessages(msg, 'reflect', { maxTokens: reflectTokens, effort: reflectEffort, timeoutMs: Math.max(timeoutMs, 1800000) });
-    const text = String(out.content || '').trim();
+    const seat = info.seat || 'A';
+    const hist = info.history || [];
+    async function ask(messages, budget, label) {
+      try {
+        const o = await callMessages(messages, 'reflect', { maxTokens: budget, effort: 'off', timeoutMs: Math.max(timeoutMs, 600000) });
+        const body = String(o.content || '').trim();
+        log({ kind: 'reflection-try', name, model, label, round: info.round || null, streak: streakN,
+              chars: body.length, reasonChars: o.reasonChars, finish: o.finish, ms: o.ms });
+        return body ? { body, out: o } : null;
+      } catch (e) {
+        log({ kind: 'reflection-try', name, model, label, round: info.round || null, streak: streakN, error: String(e).slice(0, 200) });
+        return null;
+      }
+    }
+    let hit = await ask(C.buildReflectPrompt({ streak: streakN, seat, history: hist }), reflectTokens, 'deep');
+    if (!hit) hit = await ask(C.buildPlainReflectPrompt({ streak: streakN, seat, history: hist }), 512, 'plain');
+    let text = hit ? hit.body : '';
+    if (!text) {
+      // 兜底：本局最近一次轮末复盘（chat 模式在 chatLog 里，memory 模式在 backbone 里）
+      const snap = chatLog ? chatLog.snapshot() : backbone;
+      for (let i = snap.length - 1; i >= 0; i--) {
+        if (snap[i].role === 'assistant' && String(snap[i].content || '').trim().length > 40) { text = String(snap[i].content).trim(); break; }
+      }
+      if (text) log({ kind: 'reflection-try', name, model, label: 'fallback-memo', round: info.round || null, streak: streakN, chars: text.length });
+    }
+    if (!text) { log({ kind: 'reflection-skip', name, model, round: info.round || null, streak: streakN }); return ''; }
+    const out = hit ? hit.out : { promptTokens: 0, completionTokens: 0, ms: 0 };
     if (text) {
       reflection = text;
       reflectStreak = streakN;
@@ -345,9 +374,9 @@ function makeLLMPlayer(cfg, log = () => {}) {
         backbone = [];
       }
       if (messages.length && messages[0] && messages[0].role === 'system') {
-        messages[0] = { role: 'system', content: C.buildSystem(info.hpMax || info.target || 10, { variant: prompt, rules: RULE, reflection: { streak: reflectStreak, text: reflection } }) };
+        messages[0] = { role: 'system', content: C.buildSystem(info.hpMax || info.target || 10, { variant: armId, rules: RULE, reflection: { streak: reflectStreak, text: reflection } }) };
       }
-      log({ kind: 'reflection', name, model, streak: streakN, round: info.round || null,
+      log({ kind: 'reflection', name, model, streak: streakN, round: info.round || null, source: hit ? 'model' : 'memo',
             text, promptTokens: out.promptTokens, completionTokens: out.completionTokens, ms: out.ms });
     }
     return text;

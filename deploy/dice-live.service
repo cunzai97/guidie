@@ -1,0 +1,33 @@
+# 鬼骰 · 实时对战 systemd 服务（云上常驻）
+# 用法：sudo cp 这份到 /etc/systemd/system/dice-live.service
+#       sudo systemctl daemon-reload && sudo systemctl enable --now dice-live
+#       journalctl -u dice-live -f
+[Unit]
+Description=鬼骰 实时对战平台 (dice live arena)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=py
+WorkingDirectory=/home/py/dice-live
+Environment=HOST=127.0.0.1
+Environment=PORT=18898
+Environment=DICE_DATA_DIR=/home/py/dice-live/data
+# 模型走 llm-relay 的桥：云服务器 loopback 18444 → ssh -R 隧道 → 你家 18999 网关 → web-llama 1235。
+# 只有这一个 loopback 端口被放行；其余本机/内网/云元数据地址照旧一律拒绝。
+Environment=DICE_LOCAL_PORTS=18444
+Environment=DICE_ALLOW_HOSTS=
+Environment=DICE_RATE_CREATE=12
+Environment=DICE_RATE_SECRET=20
+Environment=DICE_RATE_PRESET=6
+ExecStart=/usr/bin/node src/room-server.js
+Restart=always
+RestartSec=3
+# 只给它自己的目录写权限，别让它碰到别的项目
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/home/py/dice-live
+
+[Install]
+WantedBy=multi-user.target

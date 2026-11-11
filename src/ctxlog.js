@@ -40,12 +40,14 @@
 
   function create(opts) {
     opts = opts || {};
-    const system = String(opts.system || '');
-    const ctxLimit = Math.max(2048, +(opts.ctxLimit || 32768));      // 上下文窗口（token）
-    const compactAt = opts.compactAt == null ? 0.8 : +opts.compactAt; // 80% 触发
-    let hist = [];      // 已定稿：[{ kind:'round'|'reflect'|'compact', round, text }]
-    let cur = [];       // 当前轮：逐手消息 [{ role, content }]
-    let roundNo = 0;
+    // 支持从存档恢复（断点续跑）：opts.state 为 exportState() 的原样产物
+    const st = opts.state || null;
+    const system = String(opts.system || (st && st.system) || '');
+    const ctxLimit = Math.max(2048, +(opts.ctxLimit || (st && st.ctxLimit) || 32768));      // 上下文窗口（token）
+    const compactAt = opts.compactAt == null ? ((st && st.compactAt) == null ? 0.8 : +st.compactAt) : +opts.compactAt; // 80% 触发
+    let hist = st && Array.isArray(st.hist) ? st.hist.map(h => ({ kind:h.kind, round:h.round, text:h.text })) : [];   // 已定稿：[{ kind:'round'|'reflect'|'compact', round, text }]
+    let cur = st && Array.isArray(st.cur) ? st.cur.map(m => ({ role:m.role, content:m.content })) : [];               // 当前轮：逐手消息 [{ role, content }]
+    let roundNo = st ? (+st.round || 0) : 0;
 
     const msgs = () => {
       const out = [{ role: 'system', content: system }];
@@ -105,6 +107,14 @@
       },
       // 手动清空（新开局）
       reset(n) { hist = []; cur = []; roundNo = n || 0; return api; },
+
+      // 存档 / 恢复：断点续跑用。导出的是内部结构（hist+cur），恢复后前缀与原样一致。
+      exportState() {
+        return { system, ctxLimit, compactAt, round: roundNo,
+                 hist: hist.map(h => ({ kind:h.kind, round:h.round, text:h.text })),
+                 cur: cur.map(m => ({ role:m.role, content:m.content })) };
+      },
+      systemText() { return system; },
 
       // 压缩：总量超过 80% 上下文时，把最老的复盘合并成一条（大动作、低频）
       compactIfNeeded() {

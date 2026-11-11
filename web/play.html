@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2226%22 font-size=%2226%22>🎲</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>鬼骰 · 实时对战</title>
+<link rel="stylesheet" href="play.css">
+</head>
+<body>
+<div class="ambient"><i></i><i></i><i></i></div>
+<header class="top">
+  <div class="brand">
+    <span class="brand-mark"><span>骰</span></span>
+    <span class="brand-txt"><b>鬼骰<em>LIVE</em></b><span>实时对战 · 权威在服务端</span></span>
+  </div>
+  <div class="topright">
+    <span id="net" class="chip">连接中…</span>
+    <span id="who" class="chip ghost"></span>
+    <button id="btnMe" class="btn sm">我的配置</button>
+    <button id="btnAuth" class="btn sm">登录</button>
+  </div>
+</header>
+
+<main>
+  <!-- ---------- 首页：建桌 / 加入 ---------- -->
+  <section id="pageHome" class="page">
+    <div class="grid2">
+      <div class="card">
+        <h3>开一桌</h3>
+        <label>昵称<input id="hNick" maxlength="24" placeholder="上桌显示的名字"></label>
+        <label>桌名（可选）<input id="hTitle" maxlength="40" placeholder="朋友间的桌名"></label>
+
+        <div class="sub">我这一座</div>
+        <div id="seatA"></div>
+
+        <div class="sub">对面那一座</div>
+        <div id="seatB"></div>
+
+        <details class="adv"><summary>桌规与赛制</summary>
+          <label>规则集<select id="hRules"></select></label>
+          <label>初始血量<input id="hHp" type="number" min="1" max="40" value="8"></label>
+          <label>每手思考时限（秒）<input id="hTurn" type="number" min="10" max="600" value="45"></label>
+          <label>最多轮数<input id="hRounds" type="number" min="5" max="300" value="60"></label>
+          <label class="chk"><input id="hDup" type="checkbox" checked> 复式：同一副骰子打两把换座位，比净胜血</label>
+          <label class="chk"><input id="hToken" type="checkbox"> 给这桌设 token 预算（模型省钱用）</label>
+          <label id="hBudgetWrap" style="display:none">每桌 token 预算<input id="hBudget" type="number" min="1000" value="200000"></label>
+          <label>房间口令（可选，留空则任何人拿到房号就能进）<input id="hPass" maxlength="24" type="password" placeholder="可选"></label>
+        </details>
+
+        <button id="btnCreate" class="btn primary">开桌</button>
+        <div id="homeMsg" class="msg"></div>
+      </div>
+
+      <div class="card">
+        <h3>进桌</h3>
+        <label>房间码<input id="jCode" maxlength="8" placeholder="六个字母，或直接点朋友发的链接"></label>
+        <label>昵称<input id="jNick" maxlength="24" placeholder="上桌显示的名字"></label>
+        <label>口令（若房主设了）<input id="jPass" type="password" maxlength="24"></label>
+        <button id="btnJoin" class="btn primary">入座 / 观战</button>
+        <div class="hint">链接里带 <code>?room=房间码</code>，点进来会自动填好；进桌后可以先观战，等空位再入座。</div>
+
+        <h4>公开桌（无口令的在等桌）</h4>
+        <div id="roomList" class="list"></div>
+        <h4>最近战绩</h4>
+        <div id="matchList" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- 房间 ---------- -->
+  <section id="pageRoom" class="page" hidden>
+    <div class="bar">
+      <div>房间 <b id="rCode">—</b> <span id="rTitle"></span></div>
+      <div class="sp"></div>
+      <button id="btnCopy" class="btn sm">复制邀请链接</button>
+      <button id="btnLeave" class="btn sm ghost">离开</button>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h3 id="rState">等待入座</h3>
+        <div id="seatCards"></div>
+        <div class="kv" id="rCfg"></div>
+        <button id="btnStart" class="btn primary">开局</button>
+        <div id="roomMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h3>这桌怎么打</h3>
+        <div id="ruleNote" class="hint"></div>
+        <div class="hint">座位可以任意混：真人 / 大模型 / 内置人机。你也能挂一个「你自己调出秘诀的 AI」守擂，让朋友轮流挑战。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- 对局 ---------- -->
+  <section id="pagePlay" class="page" hidden>
+    <div class="bar">
+      <div>房间 <b id="pCode">—</b> <span id="pGame" class="chip ghost"></span></div>
+      <div class="sp"></div>
+      <button id="btnResign" class="btn sm danger">认输</button>
+      <button id="btnBackRoom" class="btn sm ghost">回房间</button>
+    </div>
+
+    <div class="status">
+      <span class="dot" id="stateDot"></span>
+      <b id="roundChip">等待开局</b>
+      <span class="sep"></span>
+      <span id="turnLine">—</span>
+      <span class="sep"></span>
+      <span id="pTimer" class="chip">—</span>
+    </div>
+
+    <div class="stage">
+      <div class="stage-hd">
+        <div class="fighter me" id="fMe">
+          <span class="badge" id="meBadge">甲</span>
+          <div class="who">
+            <b class="nm" id="meName">你</b><small id="meMeta">—</small>
+            <div class="hpbar"><i id="meHp"></i></div>
+            <small class="hpv">血 <b id="meHpV">—</b></small>
+          </div>
+        </div>
+        <div class="vs">VS</div>
+        <div class="fighter opp" id="fOpp">
+          <span class="badge" id="oppBadge">乙</span>
+          <div class="who">
+            <b class="nm" id="oppName">对手</b><small id="oppMeta">—</small>
+            <div class="hpbar"><i id="oppHp"></i></div>
+            <small class="hpv">血 <b id="oppHpV">—</b></small>
+          </div>
+        </div>
+      </div>
+
+      <div class="cup">
+        <div class="band me">
+          <div class="tag">你的骰子 <em id="pRound"></em></div>
+          <div id="myDice" class="dice"></div>
+          <div id="myCounts" class="counts"></div>
+        </div>
+        <div class="bid-value" id="bidBox">还没人喊价</div>
+        <div class="band opp">
+          <div class="tag">对手骰子 <em id="oppDiceTip">开盅后亮牌</em></div>
+          <div id="oppDice" class="dice"></div>
+          <div id="oppSeq" class="seq inline"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs" id="stageTabs">
+      <button data-t="seq" class="on">本轮流水</button>
+      <button data-t="my">你的动作</button>
+      <button data-t="hist">开盅记录</button>
+      <button data-t="stats">心理账本</button>
+    </div>
+    <div class="panel" id="panSeq"><div id="seq" class="seq"></div></div>
+    <div class="panel" id="panMy" hidden><div id="mySeq" class="seq"></div></div>
+    <div class="panel" id="panHist" hidden><div id="history" class="hist"></div></div>
+    <div class="panel" id="panStats" hidden><div id="stats" class="list small"></div></div>
+    <div id="over" class="over" hidden></div>
+
+    <div class="actionbar">
+      <div id="action" class="action"></div>
+      <div id="actMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- ---------- 我的配置 / 登录 ---------- -->
+  <div id="modal" class="modal" hidden>
+    <div class="sheet">
+      <div class="bar"><h3 id="mTitle">我的配置</h3><div class="sp"></div><button id="mClose" class="btn sm ghost">关闭</button></div>
+
+      <div id="paneAuth" hidden>
+        <div class="grid2">
+          <div class="card">
+            <h4>登录</h4>
+            <label>昵称<input id="lNick" maxlength="24"></label>
+            <label>口令<input id="lPass" type="password"></label>
+            <button id="btnLogin" class="btn primary">登录</button>
+          </div>
+          <div class="card">
+            <h4>注册</h4>
+            <label>昵称<input id="sNick" maxlength="24"></label>
+            <label>口令（至少 6 位）<input id="sPass" type="password"></label>
+            <button id="btnSignup" class="btn primary">注册并登录</button>
+            <div class="hint">账号里存你自己的上桌配置：模型端点、API Key（落盘加密，界面只显示掩码）、你的必胜秘诀、桌规偏好。匿名也能玩，但配置不会留下。</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="paneMe" hidden>
+        <h4>上桌配置（模型 / 人机 / 我本人）</h4>
+        <div id="cfgList" class="list"></div>
+        <details class="adv" open><summary>新增 / 修改一条配置</summary>
+          <label>名字<input id="cName" maxlength="40" placeholder="例如：我的 DeepSeek + 诱开秘诀"></label>
+          <label>类型<select id="cKind"><option value="llm">大模型（自带端点与 Key）</option><option value="bot">内置人机</option><option value="me">我本人上阵</option></select></label>
+          <label id="cBotWrap" style="display:none">人机<select id="cBot"></select></label>
+          <div id="cLlmWrap">
+            <label>Base URL<input id="cBase" placeholder="https://api.xxx.com/v1（只允许公网 https/白名单主机）"></label>
+            <label>模型 ID<input id="cModel" placeholder="例如 deepseek-chat / qwen-max"></label>
+            <label>API Key<input id="cKey" placeholder="留空 = 不改；保存后只显示掩码"></label>
+            <label>思考强度<select id="cEffort"><option value="off">关闭</option><option value="low">轻度</option><option value="medium" selected>中度</option><option value="high">深度</option><option value="xhigh">极限</option></select></label>
+            <label>输出预算<input id="cMax" type="number" min="256" max="65536" value="8192"></label>
+            <label>我的必胜秘诀（只替换「这局怎么赢」那一段，规则与输出格式仍由平台固定）
+              <textarea id="cGuide" rows="7" maxlength="2000" placeholder="写下你自己的打法口诀：怎么诱开、怎么读对手、什么时候转斋…"></textarea>
+            </label>
+            <div class="hint">秘诀字符数 <span id="cGuideN">0</span> / 2000。它只进你自己座位的提示词，不会泄漏给对手或观众；同一份秘诀会进战绩指纹，赢了能复盘、能复现。</div>
+            <button id="btnTest" class="btn sm">测试连接（会花一点点钱）</button>
+            <span id="testOut" class="msg"></span>
+          </div>
+          <button id="btnSaveCfg" class="btn primary">保存配置</button>
+        </details>
+        <h4>桌规偏好</h4>
+        <div class="grid3">
+          <label>规则集<select id="pRules"></select></label>
+          <label>血量<input id="pHp" type="number" min="1" max="40" value="8"></label>
+          <label>每手时限（秒）<input id="pTurn" type="number" min="10" max="600" value="45"></label>
+          <label class="chk"><input id="pDup" type="checkbox" checked> 默认复式</label>
+        </div>
+        <button id="btnSavePrefs" class="btn">保存偏好</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  规则、引擎、提示词与实验室同源（<code>src/dice-engine.js</code> / <code>src/context.js</code>）；对局权威在服务端，客户端只拿到自己那份视角。
+</footer>
+
+<script src="play.js"></script>
+</body>
+</html>

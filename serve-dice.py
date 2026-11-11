@@ -21,6 +21,7 @@ RUNS_DIR = os.path.join(ROOT, 'runs')        # 实验产物：调用流水 / 服
 os.makedirs(RUNS_DIR, exist_ok=True)
 CALL_LOG = os.path.join(RUNS_DIR, 'calls.jsonl')   # 每次模型调用都落盘，便于复盘
 MATCH_LOG = os.path.join(RUNS_DIR, 'matches.jsonl')  # 每局一条战绩（双方/指纹/胜负/过程指标），排名用
+ARENA_STATE = os.path.join(RUNS_DIR, 'arena-state.json')  # 进行中对局的存档（断点续跑），一局一份、原子覆写
 PRESETS_FILE = os.path.join(ROOT, 'presets.json')
 PORTS = {'a': 1235, 'b': 1236}
 WB_BASE = os.environ.get('DICE_WB_BASE', 'http://127.0.0.1:8791')   # 本地 OpenAI 兼容网关
@@ -92,6 +93,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _is_matches_api(self):
         return urllib.parse.urlsplit(self.path).path == '/api/matches'
 
+    def _is_state_api(self):
+        return urllib.parse.urlsplit(self.path).path == '/api/arena/state'
+
     # 静态直出禁区：presets.json 含本机端点与 API Key（只走 /api/presets），
     # runs/ 是实验流水，隐藏文件（.git 等）一律不暴露。
     def _static_blocked(self):
@@ -160,6 +164,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             with open(MATCH_LOG, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(obj, ensure_ascii=False) + '\n')
             return self._send_buffered(200, 'application/json; charset=utf-8', b'{"ok":true}', method)
+        except Exception as e:
+            return self._send_buffered(400, 'application/json',
+                                       json.dumps({'error': str(e)}, ensure_ascii=False).encode('utf-8'), method)
+
+    # ---------- 进行中比赛的存档：断点续跑 ----------
+    def _serve_arena_state(self, method):
+        if method == 'GET':
+            try:
+                with open(ARENA_STATE, 'r', encoding='utf-8') as f:
+                    data = f.read()
+                int(json.loads(data).get('savedAt') or 0)
+            except Exception:
+                data = '{}'
+            return self._send_buffered(200, 'application/json; charset=utf-8', data.encode('utf-8'), method)
+        if method == 'DELETE':
+            try:
+                os.remove(ARENA_STATE)
+            except FileNotFoundError:
+                pass
+            return self._send_buffered(200, 'application/json', b'{"ok":true}', method)
+        # POST：整份存档覆写。页面每落一手就写一次，所以必须是原子写（tmp + os.replace）。
+        n = int(self.headers.get('Content-Length') or 0)
+        if not n or n > 8 * 1024 * 1024:
+            return self._send_buffered(400, 'application/json', b'{"error":"bad body size"}', method)
+        try:
+            raw = self.rfile.read(n)
+            obj = json.loads(raw.decode('utf-8'))
+            if not isinstance(obj, dict) or 'state' not in obj:
+                raise ValueError('state required')
+            obj['savedAt'] = int(time.time() * 1000)
+            tmp = ARENA_STATE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(obj, f, ensure_ascii=False)
+            os.replace(tmp, ARENA_STATE)
+            return self._send_buffered(200, 'application/json', b'{"ok":true}', method)
         except Exception as e:
             return self._send_buffered(400, 'application/json',
                                        json.dumps({'error': str(e)}, ensure_ascii=False).encode('utf-8'), method)
@@ -365,6 +404,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self._is_local_api(): return self._serve_presets('GET')
         if self._is_matches_api(): return self._serve_matches('GET')
+        if self._is_state_api(): return self._serve_arena_state('GET')
         if self._is_api(): return self._proxy('GET')
         if self._static_blocked(): return self.send_error(404)
         super().do_GET()
@@ -376,10 +416,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self._is_matches_api(): return self._serve_matches('POST')
+        if self._is_state_api(): return self._serve_arena_state('POST')
         self._proxy('POST') if self._is_api() else self.send_error(405)
 
     def do_PUT(self):
         if self._is_local_api(): return self._serve_presets('PUT')
+        self.send_error(405)
+
+    def do_DELETE(self):
+        if self._is_state_api(): return self._serve_arena_state('DELETE')
         self.send_error(405)
 
 class Server(http.server.ThreadingHTTPServer):

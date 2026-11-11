@@ -125,8 +125,8 @@ async function main() {
     // 连败反思臂：局内连续输满 N 轮触发一次深度总结，反思文本取代兵书与此前所有总结。0=关闭
     ctxLimit: parseInt(arg('ctx-limit', '32768'), 10),   // 上下文窗口（token）；消息流到 80% 触发复盘压缩
     reflectAfter: parseInt(arg('reflect', '4'), 10),   // 0=关闭；默认连输 4 轮触发深度反思
-    reflectTokens: parseInt(arg('reflect-tokens', '16384'), 10),
-    reflectEffort: arg('reflect-effort', 'high'),
+    reflectTokens: parseInt(arg('reflect-tokens', '2048'), 10),   // 深度反思预算：独立、小；不会继承 --max-tokens
+    reflectEffort: arg('reflect-effort', 'off'),
   };
 
   const append = has('append');

@@ -1,0 +1,29 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/table/table",
+    "pages/me/me"
+  ],
+  "window": {
+    "navigationBarTitleText": "鬼骰",
+    "navigationBarBackgroundColor": "#14110d",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0f0d0a",
+    "backgroundTextStyle": "dark",
+    "enablePullDownRefresh": false
+  },
+  "tabBar": {
+    "color": "#8b8178",
+    "selectedColor": "#e0b878",
+    "backgroundColor": "#16130f",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "开桌" },
+      { "pagePath": "pages/me/me", "text": "我的" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "permission": {},
+  "requiredPrivateInfos": []
+}

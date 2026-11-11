@@ -1,0 +1,6 @@
+.cfgline {
+  padding: 18rpx 0;
+  border-top: 1rpx solid var(--line);
+}
+.cfgline:first-of-type { border-top: none; }
+.foot { padding: 8rpx 8rpx 40rpx; font-size: 22rpx; color: var(--dim); line-height: 1.8; }

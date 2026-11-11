@@ -1,0 +1,8 @@
+{
+  "desc": "鬼骰：对局页按房号进，不需要被搜索到",
+  "rules": [
+    { "action": "allow", "page": "pages/index/index" },
+    { "action": "disallow", "page": "pages/table/table" },
+    { "action": "allow", "page": "pages/me/me" }
+  ]
+}

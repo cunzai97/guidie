@@ -383,8 +383,17 @@ tests/                回归与离线冒烟（零 token、不触网）
   test-ranking.js     Elo 排名：分组/对手强度/身份合并/路径依赖
 
 runs/               实验产物（gitignore）：--out 落盘、calls.jsonl、serve.log
+miniprogram/        微信小程序（原生；引擎副本由 scripts/sync-vendor.js 从 src 同步）
+  pages/index       开桌 / 加入 / 公开桌 / 战绩
+  pages/table       牌桌：大厅 + 对局 + 结算（一页三态）
+  pages/me          座位配置 / 默认桌规 / 服务器地址
+  utils/realtime.js 长轮询通道（cursor + 退避重连 + abort）
+  vendor/           引擎 / 规则集 / 视角投影的副本
+scripts/
+  sync-vendor.js    src → miniprogram/vendor 同步与指纹校验
 docs/
   llm-judge-plan.md   LLM 裁判设计规划（仅规划，未实现）
+  miniprogram.md      小程序：本地跑通、备案上线、nginx、故障排查
 ```
 
 `src/dice-engine.js` / `dice-rules.js` / `context.js` / `dice-rulesets.js` 都是 **UMD**：浏览器挂到 `window.DiceEngine` 等全局，Node 里 `require()` 同一份实现。**页面与无头评测因此不可能跑出两套行为。**
@@ -412,6 +421,80 @@ for f in src/*.js web/*.js tests/*.js; do node --check "$f"; done
 ```
 
 ---
+
+## 实时对战平台（真人 / 模型 / 人机混打）
+
+上面那套是「跑批评测」。这里另有一台**实时对战**服务：浏览器进桌、双方各坐一席，
+服务端持有权威对局，座位可以是**真人、模型、内置人机**任意两两组合——
+人人、人模、人机、模模都走同一份引擎、同一套规则集、同一份血量与复式口径。
+
+**给朋友玩的完整说明书**（怎么让朋友打开、玩家怎么上手、房主要注意什么）见
+[`docs/live-pvp-guide.md`](docs/live-pvp-guide.md)。
+
+```bash
+bash live.sh                              # http://127.0.0.1:8898/web/play.html
+DICE_LOCAL_PORTS=8790,8791 bash live.sh   # 自己家用：放行本机模型网关
+```
+
+桌面上的玩法：建桌 → 邀请链接给朋友（房号 + 座位令牌）→ 入座开局 → 点骰子喊价 / 开盅 / 劈，
+超时自动接手（`等待超时` 可设 5s~2min），复式同桌同骰两把换座位、净胜血按人累计。
+每桌有 token 预算上限，超了就停，不会让一个陌生人把你的额度打空。
+
+关键口径（都写进了测试）：
+
+| 口径 | 落地 |
+| --- | --- |
+| 权威在服务端 | 对局由 `src/runner.js` 跑，客户端只提交「喊几 / 开盅 / 劈」，服务端按引擎校验，非法就退回等他重走 |
+| 视角隐私 | 座位只收到自己那份视角（`src/view.js` 投影，不含对方骰子）；本轮骰子只在开盅事件里公布；观战只拿公开视图 |
+| Key 不外泄 | Key 只在服务端：账号里是 AES 密文（`data/secret.key` + `users.json`），临时 Key 只进内存保险柜；事件流 / 房间信息 / 战绩里都没有 Key，只有掩码与调用数字 |
+| SSRF 防线 | 玩家自带的 Base URL 要过出网策略：本机与内网网段、云元数据地址默认全拒，`DICE_LOCAL_PORTS` / `DICE_ALLOW_HOSTS` 显式放行才通 |
+| 可复现 | 平台路径与 `src/pk.js` 同种子逐手一致（评测口径不漂移），`ruleset_hash` / `prompt_hash` 一并落盘 |
+| 自定义秘诀 | 玩家填的策略段注册成一个提示词臂（id 由文本哈希得出），除策略段外与跑批逐字同一套；`prompt_hash` 自然把它计入指纹 |
+
+相关文件：`src/room-server.js`（HTTP + SSE）、`src/rooms.js`（房间与座位）、`src/human.js`（人类座位）、
+`src/view.js`（视角投影）、`src/model-gw.js`（出网策略与 Key 解析）、`src/secrets.js`（密文盒）、`web/play.*`（玩家页）。
+
+**跑在哪算哪**：平台是普通 Node 进程，权威对局、账号、Key 全在这台机器上。
+你本机起、就只在你本机（和局域网）有效；本机一停，挂在云服务器上的那半截也就没人发牌了——
+要在云上跑，就把 `src/room-server.js` 部署到云上、模型端点也指到云上能到的地址（`DICE_ALLOW_HOSTS` 白名单），
+别把本机 8790/8791 这类网关地址写进给公众看的配置里。
+
+```bash
+node tests/test-live-pvp.js      # 零 token：视角隐私 / 座位装配 / 复式 / 认输 / 与 CLI 逐手一致
+BASE=http://127.0.0.1:8898 node tests/smoke-live-http.js           # 真起服务走一遍 HTTP + SSE
+SMOKE_LLM=1 PRESET=<预设id> BASE=... node tests/smoke-live-http.js # 额外验一桌真模型（会花钱）
+node tests/ui-check.js           # 无头 Chrome 真点一遍：开桌 → 开局 → 喊价 → 对手应答 → 开盅结算
+```
+
+`ui-check.js` 用无头 Chrome + CDP（默认 `/usr/bin/google-chrome`，`BROWSER=` 可换），
+截图落在 `runs/livedemo/ui-*.png`。它能抓到只有浏览器里才现形的那类问题——
+本轮就是靠它逮到 `hidden` 被 CSS 盖住、`getElementById('#id')` 取不到、
+以及服务端「开盅」事件撞了 `EventSource` 原生 `open` 这三处。
+```
+
+---
+
+## 微信小程序（朋友对战）
+
+浏览器版之外，同一台服务端还能直接喂给**微信小程序**：分享卡片带房号，朋友点开就落座，
+不用输网址、不用扫码。个人主体用不了 `web-view`（官方限制），所以是原生小程序——
+界面重写，引擎与规则一行没重写。
+
+完整做法（本地 20 分钟跑通 / 备案与上线 / nginx / 常见故障）见 [`docs/miniprogram.md`](docs/miniprogram.md)。
+
+| 事情 | 落地 |
+| --- | --- |
+| 实时通道 | 小程序没有 `EventSource`：新增 `GET /api/room/:code/poll`，长轮询，与 SSE **共用** `room.events` 和同一套 `visibleTo` 可见性 |
+| 登录 | `POST /api/mini/login`：`wx.login` 的 code 换 openid，AppSecret 只在服务端；没配就匿名，功能一样只少跨设备配置 |
+| 规则一致 | `miniprogram/vendor/` 是 `src/` 的副本，由 `node scripts/sync-vendor.js` 生成，`--check` 查漂移 |
+| 界面授权 | 个数/点数/斋/破斋/劈的候选全部来自 `view.legal`，小程序不自作主张 |
+
+```bash
+node tests/test-miniprogram.js        # 静态：页面四件套 / 事件绑定 / require / vendor 漂移 / HTML 标签
+node tests/test-miniprogram-view.js   # 渲染：骰子、喊价文案、选择器、开盅亮牌、结算
+node tests/smoke-mini-channel.js      # 通道：把 realtime.js 搬进 Node，对着真服务打完一整把
+node tests/test-mini-poll.js          # 协议：长轮询唤醒、since 增量、令牌、在线心跳
+```
 
 ## 规划中
 

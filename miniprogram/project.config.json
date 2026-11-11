@@ -1,0 +1,30 @@
+{
+  "description": "鬼骰 · 微信小程序（大话骰真人 / 模型对战）",
+  "miniprogramRoot": "./",
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "guidie-mini",
+  "libVersion": "3.5.0",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "coverView": true,
+    "useCompilerPlugins": false,
+    "ignoreUploadUnusedFiles": true
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "name": "牌桌（带房号）",
+          "pathName": "pages/table/table",
+          "query": "room=ABC123",
+          "scene": null
+        }
+      ]
+    }
+  }
+}

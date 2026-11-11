@@ -1,0 +1,122 @@
+.table { padding-bottom: 60rpx; }
+
+.topbar { display: flex; align-items: center; gap: 12rpx; padding: 4rpx 4rpx 18rpx; }
+.topbar .code { font-size: 34rpx; font-weight: 600; letter-spacing: 6rpx; color: var(--gold2); }
+
+/* 血量：上对手下自己，两条横向条，颜色区分 */
+.hpwrap { display: flex; flex-direction: column; gap: 12rpx; margin-bottom: 20rpx; }
+.hpbox {
+  background: var(--card); border: 1rpx solid var(--line);
+  border-radius: 16rpx; padding: 16rpx 20rpx;
+}
+.hpn { font-size: 28rpx; font-weight: 600; }
+.hpbar {
+  height: 12rpx; border-radius: 999rpx; background: #241d17;
+  margin: 10rpx 0 6rpx; overflow: hidden;
+}
+.hpfill {
+  height: 100%; border-radius: 999rpx;
+  background: linear-gradient(90deg, #e0b878, #f2d49b);
+  transition: width .3s ease;
+}
+.hpfill.opp { background: linear-gradient(90deg, #8b6f9e, #b79ccb); }
+
+/* 当前喊价：整屏最显眼的一块 */
+.bidbox {
+  background: linear-gradient(180deg, #241b13, #1b1510);
+  border: 1rpx solid #3a2c1d;
+  border-radius: 20rpx;
+  padding: 26rpx 24rpx;
+  margin-bottom: 20rpx;
+  text-align: center;
+}
+.bidtext { display: block; font-size: 46rpx; font-weight: 600; color: var(--gold2); letter-spacing: 2rpx; }
+.bidsub { display: block; margin-top: 8rpx; font-size: 24rpx; color: var(--dim); }
+
+/* 选择器：横向滚动的个数 + 六格点数 + 模式 */
+.chips { white-space: nowrap; margin-top: 10rpx; }
+.chipbtn {
+  display: inline-block;
+  padding: 14rpx 26rpx;
+  margin-right: 12rpx;
+  border-radius: 12rpx;
+  background: var(--bg2);
+  border: 1rpx solid var(--line);
+  color: var(--txt);
+  font-size: 28rpx;
+}
+.chipbtn.on { background: var(--gold); color: #2a1d0c; border-color: var(--gold2); font-weight: 600; }
+
+.faces { display: flex; gap: 12rpx; margin-top: 10rpx; }
+.facebtn {
+  flex: 1;
+  height: 92rpx;
+  line-height: 92rpx;
+  text-align: center;
+  border-radius: 14rpx;
+  background: var(--bg2);
+  border: 1rpx solid var(--line);
+  font-size: 34rpx;
+  font-weight: 600;
+}
+.facebtn.on { background: var(--gold); color: #2a1d0c; border-color: var(--gold2); }
+.facebtn.off { opacity: .28; }
+
+.preview { margin-top: 20rpx; font-size: 28rpx; color: var(--txt); }
+
+.acts { display: flex; gap: 16rpx; margin-top: 24rpx; }
+.acts .btn { flex: 1; }
+
+.waiting {
+  padding: 40rpx;
+  text-align: center;
+  color: var(--dim);
+  font-size: 28rpx;
+  background: var(--card);
+  border: 1rpx dashed var(--line);
+  border-radius: 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.seqline {
+  padding: 10rpx 0;
+  font-size: 26rpx;
+  color: var(--dim);
+  border-bottom: 1rpx dashed #26201a;
+}
+.seqline.mine { color: var(--gold); }
+
+.histline {
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid #26201a;
+  font-size: 26rpx;
+}
+.histhd { font-size: 27rpx; }
+.histline:last-child { border-bottom: none; }
+
+/* 结算浮层 */
+.overlay {
+  position: fixed; left: 0; right: 0; top: 0; bottom: 0;
+  background: rgba(8, 6, 4, .88);
+  display: flex; align-items: center; justify-content: center;
+  padding: 40rpx;
+  z-index: 50;
+}
+.overbox {
+  width: 100%;
+  background: var(--card);
+  border: 1rpx solid #3a2c1d;
+  border-radius: 24rpx;
+  padding: 32rpx;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.toast {
+  position: fixed; left: 40rpx; right: 40rpx; bottom: 60rpx;
+  background: #2a2118; border: 1rpx solid #4a3a26;
+  color: var(--txt); font-size: 26rpx;
+  padding: 18rpx 24rpx; border-radius: 14rpx;
+  z-index: 60;
+}
+.toast.bad { border-color: #5a2c26; color: #f0b3ac; }

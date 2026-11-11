@@ -16,6 +16,7 @@ globalThis.DiceRules = require(path.join(root, 'dice-rules.js'));
 globalThis.DiceContext = require(path.join(root, 'context.js'));
 globalThis.DiceRulesets = require(path.join(root, 'dice-rulesets.js'));
 globalThis.DiceBots = require(path.join(root, 'bots.js'));
+globalThis.DiceCtxLog = require(path.join(root, 'ctxlog.js'));
 globalThis.ArenaRanking = require(path.join(__dirname, '..', 'web', 'ranking.js'));
 
 /* ---------- 最小 DOM 桩 ---------- */
@@ -89,9 +90,13 @@ async function run() {
   console.log('[2] decideBot 本地决策合法 ✓  → ' + A.actText(d.action) + '（' + d.ms + 'ms, 0 tok）');
 
   // [3] 整局打完：血量归零即结束，双方都是机器人时不发复盘请求
-  let summaryCalls = 0;
+  let summaryCalls = 0, stateSaves = 0;
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (...a) => { summaryCalls++; throw new Error('不该发请求'); };
+  globalThis.fetch = async (url, opt) => {
+    const u = String(url || '');
+    if (u.indexOf('/api/arena/state') === 0) { stateSaves++; return { ok:true, json:async () => ({ ok:true }) }; }
+    summaryCalls++; throw new Error('不该发请求');
+  };
   return (async () => {
     await A.startMatch();
     globalThis.fetch = realFetch;
@@ -106,6 +111,7 @@ async function run() {
     assert.ok(G && G.over, '对局应自然结束');
     assert.ok(G.hp.A <= 0 || G.hp.B <= 0 || G.capped, '结束条件应是血量归零或轮数封顶');
     assert.strictEqual(summaryCalls, 1, '只有对局记录那一次 POST（复盘与模型调用都不该走接口），实际 ' + summaryCalls);
+    assert.ok(stateSaves >= 1, '每落一手都要写断点存档（实际 ' + stateSaves + ' 次）');
     assert.ok(A.state.memos.A.length === 0, '机器人席位不应写入复盘');
     console.log('[3] 机器人整局对战 ✓  血量 ' + G.hp.A + ':' + G.hp.B + ' · ' + G.roundNo + ' 轮 · 胜者 '
       + (G.winner ? A.seatLabel(G.winner) : '平局'));
@@ -124,6 +130,48 @@ async function run() {
     assert.strictEqual(botSeat.kind, 'bot');
     await A.requestReflect('A', 2).then(t => assert.strictEqual(t, '', '机器人席位不发反思请求'));
     console.log('[4] 连败反思：连输 N 轮触发 / 赢一轮清零 / 机器人跳过 ✓');
+
+    // [5] 断点续跑：整局存档 → JSON 往返 → 恢复后局面 / 上下文前缀 / ursor 全等，且能继续落子
+    const CX = globalThis.DiceCtxLog;
+    A.state.settings.rules = 'flex';
+    A.state.settings.target = 5;
+    A.state.players = { A:A.botSeat('bot:reader'), B:A.botSeat('bot:deep') };
+    A.state.bots = { A:BOT.makeBot('reader', E.mulberry32(7)), B:BOT.makeBot('deep', E.mulberry32(9)) };
+    A.state.started = true; A.state.runId = 'rt-test'; A.state.gameNo = 1;
+    A.state.G = E.newMatch({ hpMax:5, firstBidder:'A', rules:A.allRules().find(r => r.id === 'flex') });
+    E.startRound(A.state.G, E.mulberry32(11));
+    A.state.logs = { A:CX.create({ system:'SYS-A', ctxLimit:8192 }), B:CX.create({ system:'SYS-B', ctxLimit:8192 }) };
+    for (const w of ['A','B']) {
+      A.state.logs[w].beginRound(1);
+      A.state.logs[w].appendUser('第1轮第1手：对手喊 2 个 3');
+      A.state.logs[w].appendAssistant('行动：喊 3 个 4');
+      A.state.memos[w].push({ round:1, text:'第 1 轮复盘（测试）' });
+      A.state.ownMemo[w].push({ round:1, judgment:'测试判断', action:'喊 3 个 4' });
+    }
+    A.state.cursor = { A:{ round:1, turn:1 }, B:{ round:1, turn:1 } };
+    A.state.reflect = { text:{ A:'反思A', B:'' }, streak:{ A:2, B:0 }, round:{ A:1, B:null } };
+    const snap = A.arenaSaveState();
+    assert.ok(snap && snap.v === 3 && snap.G.round, '存档应包含局面与当前轮');
+    const wire = JSON.parse(JSON.stringify(snap));          // 过一遍 JSON：模拟落盘再读回
+    const beforeHash = { A:A.state.logs.A.prefixHash(), B:A.state.logs.B.prefixHash() };
+    const beforeMsg = A.state.logs.A.snapshot().length;
+    const beforeDice = JSON.stringify(A.state.G.round.dice);
+    A.state.G = null; A.state.logs = {}; A.state.players = null;   // 把内存状态砸掉，逼它从存档重建
+    assert.ok(A.arenaRestoreState(wire), '恢复成功');
+    assert.strictEqual(A.state.G.hpMax, 5);
+    assert.strictEqual(A.state.G.rules.id, 'flex', '规则集按 id 复原');
+    assert.strictEqual(JSON.stringify(A.state.G.round.dice), beforeDice, '骰子原样复原');
+    assert.strictEqual(A.state.logs.A.prefixHash(), beforeHash.A, '上下文前缀哈希不变（缓存可续）');
+    assert.strictEqual(A.state.logs.B.prefixHash(), beforeHash.B);
+    assert.strictEqual(A.state.logs.A.snapshot().length, beforeMsg, '消息条数不变');
+    assert.strictEqual(A.state.cursor.A.round, 1, '逐手游标复原');
+    assert.strictEqual(A.state.reflect.text.A, '反思A');
+    // 恢复后还能继续打：机器人走本地决策，落子必须合法
+    const G2 = A.state.G, w2 = G2.round.turn;
+    const act = A.decideBot(w2, G2.round.bid ? '行动' : '首喊');
+    assert.ok(act && act.action, '恢复后仍能给出决策');
+    A.state.settings.strict = true;
+    console.log('[5] 断点续跑：存档→JSON→恢复，局面/骰子/前缀哈希/游标全等，且能继续落子 ✓');
     console.log('==> ALL PASS');
   })();
 }

@@ -9,6 +9,10 @@ runs/
 # 本机运行日志
 *.log
 
+
+# 实时对战平台的数据：账号密文盒 / 主密钥 / 战绩 / 调用流水
+data/
+
 # ---- 本地配置：含内网端口与个人模型清单 ----
 # presets.json 由页面「模型设置」自动写出，含 Base URL / API Key 等本机信息。
 # 需要迁移配置时，用页面里的「导出 / 导入」，或复制 presets.json.example。
@@ -40,3 +44,7 @@ Thumbs.db
 *.bin
 .tmp/
 tmp/
+
+# 微信开发者工具的本地私有配置（含本机路径与调试偏好）
+miniprogram/project.private.config.json
+presets.json.bak*

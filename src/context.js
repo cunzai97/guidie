@@ -77,6 +77,42 @@ const ARMS = {
 const ARM_DEFAULT = 'plain';
 const armOf = id => ARMS[id] || ARMS[ARM_DEFAULT];
 
+/* ---------- 自定义秘诀（实时对战平台用）----------
+ * 玩家自己填「这局怎么赢」那一段。只替换策略段：规则文本与输出格式仍由平台硬编码，
+ * 不然玩家可以把 harness 改成自己想要的样子，评测与对战口径就崩了。
+ * 文本注册成一个提示词臂，id 由文本哈希得出：同文本同 id → 指纹、复现、排名分组全部自然成立。
+ */
+const GUIDE_MAX = 2000;
+function cleanGuide(text) {
+  return String(text == null ? '' : text)
+    .replace(/\r/g, '')
+    // 丢掉控制字符与零宽字符：别让不可见字符把注入内容藏起来
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E]/g, '')
+    .trim().slice(0, GUIDE_MAX);
+}
+function guideHash(text) {
+  // 非加密哈希（两路 32 位 FNV 拼成 16 位十六进制）：只用于把秘诀文本映射成稳定臂 id。
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+    h2 = ((h2 << 5) | (h2 >>> 27)) >>> 0;
+  }
+  return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+}
+function customArmId(guideText) {
+  const g = cleanGuide(guideText);
+  if (!g) return ARM_DEFAULT;
+  const id = 'custom-' + guideHash(g);
+  if (!ARMS[id]) {
+    ARMS[id] = Object.assign({}, ARMS.plain, { label: '自定义秘诀 · ' + g.slice(0, 24).replace(/\n/g, ' '), guide: g, custom: true });
+  }
+  return id;
+}
+function isCustomArm(id) { return !!(ARMS[id] && ARMS[id].custom); }
+function armLabel(id) { return (ARMS[id] || ARMS[ARM_DEFAULT]).label; }
+
 // 非经典套：把可用的行动词汇补全（转斋 / 破斋 / 劈），仍是硬格式、不喂策略。
 
 
@@ -365,6 +401,19 @@ function buildReflectPrompt(opts = {}) {
   ];
 }
 
+/* 普通反思：深度反思没写出正文（预算全耗在思考里）时的退化路径。
+ * 只要一段短的、能立刻执行的打法，不要求长篇复盘——这样它一定能落在正文里。 */
+function buildPlainReflectPrompt(opts = {}) {
+  const streakN = opts.streak || 0;
+  const L = [];
+  L.push(`你正在和同一个对手对局，已经连续输掉 ${streakN} 轮。`);
+  L.push('用一段话写下接下来几轮你要改什么（不超过 300 字），只写正文，不要罗列分析。');
+  return [
+    { role: 'system', content: '你在给自己写一条简短的临场打法，只输出正文。' },
+    { role: 'user', content: L.join('\n') },
+  ];
+}
+
 function buildSummaryPrompt(m, who, result, opts = {}) {
   const R = rulesOf(opts.rules || m.rules);
   const opp = E.other(who);
@@ -429,11 +478,11 @@ function promptTexts(rules, variant) {
 }
 
 const API = { buildSystem, buildUser, buildTurn, buildSummaryPrompt, memoryMarker,
-  legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts, buildReflectPrompt,
+  legalMenu, momentum, seqTag, resultTail, rulesTextFor, promptTexts, buildReflectPrompt, buildPlainReflectPrompt,
   extractJudgment, parseAction, checkLegal, isPromptEcho, ACTION_LINE_RE: RUL.ACTION_LINE_RE,
   RULES_TPL,
   FRAME_PLAIN, HOWTO_PLAIN, FORMAT_PLAIN, FORMAT_PLAIN_CLASSIC, SUMMARY_INSTRUCTION_PLAIN, CUE_PLAIN,
-  ARMS, ARM_DEFAULT, armOf };
+  ARMS, ARM_DEFAULT, armOf, armLabel, customArmId, isCustomArm, cleanGuide, GUIDE_MAX };
 if (NODE) module.exports = API;
 else root.DiceContext = API;
 })(typeof self !== 'undefined' ? self : globalThis);

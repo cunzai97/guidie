@@ -37,7 +37,9 @@ rm -f "$TMP"
 echo "已写 ~/$DIR/presets.json（钥匙只落在这台云机的文件里，权限 600）"
 
 # 重启平台进程（没上 systemd 时：杀掉旧的、带 DICE_LOCAL_PORTS 重起）
-ssh "$DEST" "pkill -f 'room-server.js' 2>/dev/null; sleep 1; cd ~/$DIR && HOST=127.0.0.1 PORT=18898 DICE_DATA_DIR=\$HOME/$DIR/data DICE_LOCAL_PORTS=${REMOTE_PORT} setsid nohup node src/room-server.js > serve.log 2>&1 </dev/null & sleep 2; tail -3 ~/$DIR/serve.log"
+# 注意 pkill 的写法：'room-serve[r].js' 这种带括号的形式不会匹配到执行它的这条 shell 自己，
+# 直接写 'room-server.js' 会把远程 shell 一起杀了，重启就永远不会发生。
+ssh "$DEST" "pkill -f 'room-serve[r].js' 2>/dev/null; sleep 1; cd ~/$DIR && HOST=127.0.0.1 PORT=18898 DICE_DATA_DIR=\$HOME/$DIR/data DICE_LOCAL_PORTS=${REMOTE_PORT} setsid nohup node src/room-server.js > serve.log 2>&1 </dev/null & sleep 2; tail -3 ~/$DIR/serve.log"
 cat <<EOS
 
 已接好。要点：

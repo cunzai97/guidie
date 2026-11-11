@@ -8,8 +8,10 @@
     <text wx:if="{{role === 'spec'}}" class="chip">观战</text>
   </view>
 
+  <view wx:if="{{loading}}" class="waiting"><text>进桌中…</text></view>
+
   <!-- ============ 大厅 ============ -->
-  <block wx:if="{{phase === 'lobby'}}">
+  <block wx:elif="{{phase === 'lobby'}}">
     <view class="card">
       <view class="row">
         <view class="h2">{{room.title || '这一桌'}}</view>

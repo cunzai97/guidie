@@ -137,7 +137,7 @@
   </view>
 
   <view class="hint foot">
-    <view>服务端：{{baseUrl}}（{{env}}）</view>
+    <view>服务端：{{liveBase}}（{{env}}）</view>
     <view>引擎副本指纹见 miniprogram/vendor/MANIFEST.json，改规则后跑 node scripts/sync-vendor.js。</view>
   </view>
 </view>

@@ -1,32 +1,53 @@
-/* 小程序端唯一需要你改的文件：把 BASE_URL 指到你自己的服务。
+/* 小程序端唯一需要你改的文件。
  *
- * 开发期（不需要备案域名）：
- *   1) 电脑上 HOST=0.0.0.0 PORT=8898 bash live.sh
- *   2) 手机和电脑连同一个 WiFi
- *   3) 开发者工具「详情 → 本地设置 → 勾选：不校验合法域名」
- *      真机预览/开发版：右上角菜单 → 开发调试 → 打开调试（此后才不校验域名）
- *   4) 把下面 dev 改成电脑的内网地址（hostname -I 看，别写 127.0.0.1 —— 手机访问不到）
+ * 三种玩法，看你要哪一种：
  *
- * 上线期（必须）：
- *   - 域名过 ICP 备案、配好 HTTPS 证书
- *   - 小程序后台「开发管理 → 开发设置 → 服务器域名」把域名加进 request 合法域名
- *   - 把 ENV 改成 'prod'
+ *  ① 局域网自测（今天就能跑，零成本）
+ *     TRANSPORT = 'http'，dev 填电脑内网 IP；手机和电脑同一个 WiFi；
+ *     开发者工具勾「不校验合法域名」，真机预览时右上角菜单 → 开发调试 → 打开调试。
  *
- * 注意：小程序不允许请求 IP 之外的 localhost；也不允许带端口时又在白名单里写别的端口。
- * 备案下来之前，正式版/体验版是连不上你自己的服务器的 —— 这是微信的规矩，不是代码问题。
+ *  ② 给朋友玩 · 体验版 + 调试模式（零成本、零备案，朋友第一次要手动开一下调试）
+ *     TRANSPORT = 'http'，dev 填服务器的公网地址（http://1.2.3.4:8898）。
+ *     朋友被加为体验成员 → 打开体验版 → 右上角 ··· → 开发调试 → 打开调试 → 重进。
+ *     开过一次长期有效，但你的服务器得一直开着。
+ *
+ *  ③ 给朋友玩 · 云托管内网通道（免域名、免备案、朋友什么都不用设置）
+ *     TRANSPORT = 'cloud'，填 CLOUD.env（云环境 ID）与 CLOUD.service（服务名）。
+ *     请求走 wx.cloud.callContainer 的微信内网，不经过公网域名，
+ *     因此不需要买域名、不需要备案、也不需要配 request 合法域名。
+ *     代价：云托管要把最小副本设成 1 才不丢房间（缩容到 0 会清掉内存里的对局），
+ *     另外 callContainer 客户端超时上限 15s，长轮询挂起时间要压到 10s。
+ *
+ * 正式上线（想被搜到、想长期跑）才需要 ICP 备案 + HTTPS 域名，那是另一回事。
  */
+const TRANSPORT = 'http';             // 'http' | 'cloud'
+
 const ENV = {
-  dev: 'http://192.168.8.119:8898',
-  prod: 'https://dice.example.com',
+  dev: 'http://192.168.8.119:8898',   // ① 局域网填电脑内网 IP；② 体验版填服务器公网地址
+  prod: 'https://dice.example.com',   // 备案域名上线用
 };
 
 const CUR = 'dev';
 
+const CLOUD = {
+  env: '',                            // 云开发环境 ID，例如 'prod-3gxxxxx'
+  service: '',                        // 云托管服务名，例如 'guidie'
+};
+
+// callContainer 客户端超时不得超过 15s（官方硬限制），挂起时间必须比它更短。
+const CLOUD_WAIT_MS = 10000;
+
 module.exports = {
-  BASE_URL: ENV[CUR],
+  TRANSPORT,
+  CLOUD,
   ENV: CUR,
-  // 长轮询挂多久（服务端上限 25s）。小程序 wx.request 超时要留余量，否则会误判断线。
-  POLL_WAIT_MS: 25000,
-  REQUEST_TIMEOUT_MS: 32000,
+  BASE_URL: ENV[CUR],
+
+  // 长轮询：挂多久、客户端等多久。cloud 模式自动收紧到 15s 以内。
+  POLL_WAIT_MS: TRANSPORT === 'cloud' ? CLOUD_WAIT_MS : 25000,
+  POLL_TIMEOUT_MS: TRANSPORT === 'cloud' ? 14000 : 33000,
+
+  REQUEST_TIMEOUT_MS: TRANSPORT === 'cloud' ? 14000 : 32000,
+  CLOUD_WAIT_MS,
   APP_NAME: '鬼骰',
 };

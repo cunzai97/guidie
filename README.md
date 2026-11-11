@@ -482,6 +482,11 @@ node tests/ui-check.js           # 无头 Chrome 真点一遍：开桌 → 开�
 
 完整做法（本地 20 分钟跑通 / 备案与上线 / nginx / 常见故障）见 [`docs/miniprogram.md`](docs/miniprogram.md)。
 
+> **只是玩玩、不想备案？** 有三条不要备案的路，都在文档第三节：
+> 体验版打开「开发调试」直连 IP（0 成本，朋友首次多点两下）、
+> 云托管 `callContainer` 内网通道（免域名免备案，朋友点卡片就进）、
+> 或借一个已备案域名的二级域名。正式上架才必须备案（域名 + 小程序两样都要）。
+
 | 事情 | 落地 |
 | --- | --- |
 | 实时通道 | 小程序没有 `EventSource`：新增 `GET /api/room/:code/poll`，长轮询，与 SSE **共用** `room.events` 和同一套 `visibleTo` 可见性 |
@@ -494,6 +499,7 @@ node tests/test-miniprogram.js        # 静态：页面四件套 / 事件绑定 
 node tests/test-miniprogram-view.js   # 渲染：骰子、喊价文案、选择器、开盅亮牌、结算
 node tests/smoke-mini-channel.js      # 通道：把 realtime.js 搬进 Node，对着真服务打完一整把
 node tests/test-mini-poll.js          # 协议：长轮询唤醒、since 增量、令牌、在线心跳
+node tests/test-mini-transport.js     # 传输：直连 / 云托管内网两条路的请求形状与报错口径
 ```
 
 ## 规划中

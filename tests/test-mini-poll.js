@@ -65,7 +65,7 @@ async function waitUp() {
 
     // —— 建桌：A 座是我，B 座留空等朋友 ——
     const cr = await call('POST', '/api/room/create', {
-      title: 'poll 自检', rules: 'flex', hpMax: 8, turnMs: 30000, seats: { A: { kind: 'me', nick: '甲' }, B: { kind: 'open' } },
+      title: 'poll 自检', rules: 'flex', hpMax: 8, turnMs: 180000, seats: { A: { kind: 'me', nick: '甲' }, B: { kind: 'open' } },
     });
     ok(cr.status === 200 && cr.body.code, '建桌成功', cr.body);
     const code = cr.body.code;
@@ -139,9 +139,20 @@ async function waitUp() {
     const vSpec = await poll(code + '/poll?role=spec&since=0&wait=0');
     ok(!('dice' in (vSpec.body.view || {})), '观战 view 没有 dice 字段', Object.keys(vSpec.body.view || {}));
 
-    // —— 提交行动：A 走一步，B 侧要能看到 bid 广播 ——
-    const act = await call('POST', '/api/room/action', { code, seat: 'A', token: tokA, action: v.legal[0] });
-    ok(act.status === 200, 'A 提交合法动作成功', act.body);
+    // —— 提交行动：首手是 (seed % 2) 随机定的 A 或 B，谁先走谁提交 ——
+    // 以前写死 A 提交，一半概率撞上 B 先手，报「现在不归你走」，是测试的锅不是引擎的锅。
+    const turnSeat = v.turn === 'me' ? 'A' : 'B';
+    const turnTok = turnSeat === 'A' ? tokA : tokB;
+    const act = await call('POST', '/api/room/action', { code, seat: turnSeat, token: turnTok, action: v.legal[0] });
+    if (act.status !== 200) {
+      const diag = (await call('GET', '/api/room/' + code)).body;
+      console.log('  [诊断] turn=' + v.turn + ' seat=' + turnSeat + ' legal[0]=' + JSON.stringify(v.legal[0])
+        + ' state=' + (diag.room || {}).state + ' roundNo=' + (diag.room || {}).roundNo
+        + ' hp=' + JSON.stringify((diag.room || {}).hp) + ' conn=' + JSON.stringify({
+          A: (diag.room.seats.A || {}).connected, B: (diag.room.seats.B || {}).connected,
+        }));
+    }
+    ok(act.status === 200, '轮到的一方提交合法动作成功（' + turnSeat + ' 先手）', act.body);
     const afterBid = await poll(code + '/poll?role=spec&since=' + (vSpec.body.cursor) + '&wait=3000');
     const bidEv = afterBid.body.events.find(e => e.type === 'bid');
     ok(!!bidEv, '观战侧收到 bid 广播', afterBid.body.events.map(e => e.type));

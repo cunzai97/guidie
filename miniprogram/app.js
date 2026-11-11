@@ -1,7 +1,7 @@
 /* 小程序全局状态：只放「跨页面还要用」的东西。
  * 会话令牌 / 昵称 / 每桌的座位令牌 全部落在本地存储，不做共享登录态缓存以外的加工。
  */
-const { BASE_URL } = require('./config.js');
+const { BASE_URL, TRANSPORT, CLOUD } = require('./config.js');
 
 App({
   globalData: {
@@ -18,6 +18,11 @@ App({
     const g = this.globalData;
     g.token = wx.getStorageSync('token') || '';
     g.nick = wx.getStorageSync('nick') || '';
+    // 云托管通道：官方要求 callContainer 之前先 init 一次（任意环境均可）。
+    // 只是「直连地址」模式就不碰它，免得没开通云开发的小程序启动时抛错。
+    if (TRANSPORT === 'cloud' && CLOUD && CLOUD.env && wx.cloud) {
+      try { wx.cloud.init({ env: CLOUD.env, traceUser: false }); } catch (e) { /* 调用时还会再试一次 */ }
+    }
     // 分享卡片带 ?room=CODE 进来：先把房号存下，首页 onShow 会自己跳过去
     const q = (options && options.query) || {};
     if (q.room) g.enterRoom = String(q.room).toUpperCase();

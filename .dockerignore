@@ -1,0 +1,22 @@
+# 构建镜像不需要的东西（云托管上传代码包时也能省一大截）
+.git
+.gitignore
+.gitattributes
+.github
+
+# 小程序与文档不进镜像
+miniprogram
+docs
+tests
+scripts
+
+# 实验产物与本地数据
+runs
+data
+*.jsonl
+presets.json
+presets.json.bak*
+*.log
+
+node_modules
+.DS_Store

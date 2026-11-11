@@ -5,7 +5,6 @@
  * 协议没变：事件类型、payload、可见性全由服务端决定，这里只负责「拉到就交出去」。
  */
 const api = require('./api.js');
-const { POLL_WAIT_MS } = require('../config.js');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -13,7 +12,8 @@ function createChannel(opt) {
   const code = String(opt.code || '').toUpperCase();
   const role = opt.role === 'A' || opt.role === 'B' ? opt.role : 'spec';
   const token = opt.token || '';
-  const wait = opt.wait || POLL_WAIT_MS;
+  // 挂起时长与客户端超时都由传输层决定：cloud 模式的 callContainer 上限 15s，必须收紧
+  const wait = opt.wait || api.pollWait();
   const qs = 'role=' + role + (token ? '&token=' + encodeURIComponent(token) : '');
 
   let cursor = 0;
@@ -25,7 +25,7 @@ function createChannel(opt) {
     while (!stopped) {
       try {
         const r = await api.get('/api/room/' + code + '/poll?' + qs + '&since=' + cursor + '&wait=' + wait, {
-          timeout: wait + 8000,
+          timeout: api.pollTimeout(wait),
           onTask: t => { task = t; },
         });
         if (stopped) return;

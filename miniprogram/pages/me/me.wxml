@@ -122,8 +122,23 @@
     <button class="btn mt" bindtap="onSavePrefs">存为默认</button>
   </view>
 
-  <!-- 服务器地址：上线换域名、临时连朋友的机器，都不用改代码重发版 -->
+  <!-- 连接方式：直连地址（免备案，但要开调试） / 云托管内网（免域名免备案） -->
   <view class="card">
+    <view class="h2">连接方式</view>
+    <view class="chips mt">
+      <view class="chipbtn {{transport === 'http' ? 'on' : ''}}" data-k="http" bindtap="onPickTransport">直连地址</view>
+      <view class="chipbtn {{transport === 'cloud' ? 'on' : ''}}" data-k="cloud" bindtap="onPickTransport">云托管内网</view>
+    </view>
+    <view class="hint mt" wx:if="{{transport === 'cloud'}}">
+      走微信内网 callContainer，不需要域名、不需要备案。前提是 config.js 里填好了 CLOUD.env 与 CLOUD.service。
+    </view>
+    <view class="hint mt" wx:else>
+      直连你填的地址。体验版要绕过域名校验，朋友第一次进要打开「··· → 开发调试」。
+    </view>
+  </view>
+
+  <!-- 服务器地址：上线换域名、临时连朋友的机器，都不用改代码重发版 -->
+  <view class="card" wx:if="{{transport === 'http'}}">
     <view class="h2">服务器</view>
     <view class="hint mt">当前生效：{{liveBase}}</view>
     <view class="field mt">
@@ -137,7 +152,8 @@
   </view>
 
   <view class="hint foot">
-    <view>服务端：{{liveBase}}（{{env}}）</view>
+    <view wx:if="{{transport === 'http'}}">服务端：{{liveBase}}（{{env}}）</view>
+    <view wx:else>连接：云托管内网通道（免域名、免备案）</view>
     <view>引擎副本指纹见 miniprogram/vendor/MANIFEST.json，改规则后跑 node scripts/sync-vendor.js。</view>
   </view>
 </view>

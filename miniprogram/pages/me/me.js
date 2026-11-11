@@ -24,6 +24,7 @@ function blankForm() {
 Page({
   data: {
     nick: '', logged: false, wxLogin: false, baseUrl: BASE_URL, liveBase: BASE_URL, baseUrlInput: '', env: ENV,
+    transport: 'http', cloudReady: false,
     configs: [], editing: false, form: blankForm(), formMsg: '', formMsgBad: false,
     kinds: KINDS, efforts: EFFORTS, bots: [], botDesc: '',
     rules: [], ruleNames: [], ruleIndex: 0, hp: 8, turnSec: 45, dup: true,
@@ -35,6 +36,8 @@ Page({
       logged: !!wx.getStorageSync('token'),
       liveBase: apiMod.baseUrl(),
       baseUrlInput: wx.getStorageSync('baseUrl') || '',
+      transport: apiMod.kind(),
+      cloudReady: apiMod.cloudReady(),
     });
     this.bootstrap();
   },
@@ -171,6 +174,21 @@ Page({
   onField(e) {
     const f = e.currentTarget.dataset.f;
     this.setData({ ['form.' + f]: e.detail.value });
+  },
+
+  // 切换传输：直连地址 / 云托管内网。存本机，立即生效，不用重发版
+  onPickTransport(e) {
+    const k = e.currentTarget.dataset.k;
+    if (k === 'cloud' && !apiMod.cloudReady()) {
+      return wx.showModal({
+        title: '还没配云环境',
+        content: '要先用 config.js 填 CLOUD.env（云环境 ID）和 CLOUD.service（云托管服务名），再发版。\n\n只是想和朋友玩玩的话，用「直连地址」就够了。',
+        showCancel: false,
+      });
+    }
+    wx.setStorageSync('transport', k);
+    this.setData({ transport: k });
+    this.bootstrap();
   },
 
   onBaseUrl(e) { this.setData({ baseUrlInput: e.detail.value }); },

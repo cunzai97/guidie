@@ -7,6 +7,8 @@
  * [6] Parity：平台路径与 src/pk.js 同种子逐手一致（评测口径不漂移）
  */
 'use strict';
+// 自检跑批不需要「人机想一会儿」：把节奏延迟关掉，测试才不会被人工延迟拖慢
+process.env.DICE_BOT_DELAY_MS = '0';
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -80,6 +82,13 @@ async function waitFor(cond, ms, tag) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { if (cond()) return true; await sleep(10); }
   return false;
+}
+// 平台规则：对战席两边都「准备」了才开局。AI/模型席位放置即准备，真人席要自己点。
+function readyBoth(reg, room) {
+  for (const p of ['A', 'B']) {
+    const s = room.seats[p];
+    if (s.kind === 'me' && !s.ready) reg.setReady(room.code, p, s.token, true);
+  }
 }
 function makeRegistry(o = {}) {
   const dir = tmp('reg');
@@ -176,6 +185,7 @@ console.log('[2] 人类座位接进 runner');
     const sinkA = mkSink(), sinkSpec = mkSink();
     reg.subscribe(room, sinkA, 'A', null);
     reg.subscribe(room, sinkSpec, 'spec', null);
+    readyBoth(reg, room);
     const started = await reg.start(room.code, { token: room.seats.A.token });
     ok(started.ok, '房主凭座位令牌开局', started);
     const humanActor = reg.actorOfPlan(room, 'A');
@@ -216,7 +226,20 @@ console.log('[2] 人类座位接进 runner');
     ok(opens.length > 0 && opens.every(o => o.data.reveal && o.data.reveal.dice), '开盅事件带亮牌（结算后才公布）');
     ok(!sinkSpec.text().includes('SECRETPRESETKEY'), '事件流里没有任何 Key 泄漏');
     const specAsks = evS.filter(e => e.type === 'ask');
-    ok(specAsks.length === 0, '观战者收不到私有 ask');
+    // 潘潘定的规则：不亲自出马（观战）= 全知，私有 ask 也给他；亲自出马只能看自己那一侧。
+    ok(specAsks.length > 0, '观战（不亲自出马）收得到私有 ask —— 观战全知', specAsks.length);
+    ok(evS.some(e => e.type === 'omni' && e.data && e.data.dice && e.data.dice.A && e.data.dice.B), '观战的全知通道带两边骰子');
+    const aAsks = (sinkA.events() || []).filter(e => e.type === 'ask');
+    ok(aAsks.length > 0 && aAsks.every(e => e.data && e.data.you === 'A'), '座位侧的私有 ask 只描述自己这一座', aAsks.length);
+    // 推演的作用域：B 座的推演只到 B 座和观战（全知），绝不到 A 座（亲自出马只看自己）
+    reg.emit(room, 'think', { seat: 'B', text: '对面推演样本' }, 'thinkB');
+    const afterA = sinkA.events(), afterSpec = sinkSpec.events();
+    ok(afterA.every(e => !(e.type === 'think' && e.data && e.data.seat === 'B')), 'A 座收不到 B 座的推演');
+    ok(afterSpec.some(e => e.type === 'think' && e.data && e.data.seat === 'B'), '观战收得到 B 座的推演（全知）');
+    const hwSeated = reg.hostMayWatch(room, { user: null, token: room.seats.A.token });
+    const hwFree = reg.hostMayWatch(room, { user: null, token: room.hostToken });
+    ok(hwSeated.ok === false && /亲自出马/.test(hwSeated.reason), '房主/座位里的人不能再用房主身份看对面', hwSeated);
+    ok(hwFree.ok === true, '没坐在桌里的房主可以用全知身份看');
     const info = JSON.stringify(reg.info(room));
     ok(!/token/i.test(info) || !/[0-9a-f]{32}/.test(info), '房间信息里不含座位令牌');
 
@@ -242,6 +265,7 @@ console.log('[2] 人类座位接进 runner');
       });
       const sinkB = mkSink();
       regB.subscribe(roomB, sinkB, 'A', null);
+      readyBoth(regB, roomB);
       await regB.start(roomB.code, { token: roomB.seats.A.token });
       const actorB = regB.actorOfPlan(roomB, 'A');
       let guard = 4000, resigned = false;
@@ -368,6 +392,48 @@ console.log('[2] 人类座位接进 runner');
         { pk: { w: g.winner, hp: g.hp, r: g.rounds }, room: { w: direct.winner, hp: direct.hp, r: direct.rounds } });
     }
     reg.close(room.code);
+  }
+
+  /* ---------- 席位/权限回归（评审提出的 P0） ---------- */
+  {
+    const reg3 = makeRegistry();
+    const room = reg3.create({
+      seats: { A: { kind: 'me', nick: '坐着的' }, B: { kind: 'bot', bot: 'reader' } },
+      rules: 'flex', hpMax: 8, maxRounds: 20, turnMs: 30000, duplicate: false, deals: 1,
+    }, reg3.owner);
+    const aTok = room.seats.A.token;
+
+    // 1) 在座的人不能开全知观战连接
+    const specSeated = reg3.specMayWatch(room, { token: aTok });
+    ok(specSeated.ok === false, '坐在对战席的人开观战连接会被拒（亲自出马只能看自己）', specSeated);
+    const specOther = reg3.specMayWatch(room, {});
+    ok(specOther.ok === true, '没有座位的人可以观战（全知）');
+
+    // 2) hello 只能发给这条连接：别人不会收到 you:'spec' 的握手
+    const sinkA = mkSink(), sinkSpec = mkSink();
+    const subA = reg3.subscribe(room, sinkA, 'A', null);
+    const subSpec = reg3.subscribe(room, sinkSpec, 'spec', null);
+    reg3.emitTo(room, subSpec.id, 'hello', { room: { you: 'spec' } });
+    ok(/hello/.test(sinkSpec.text()) && !/hello/.test(sinkA.text()), 'hello 只发给对应连接，不会灌给在座的人',
+      { spec: sinkSpec.text().slice(0, 40), a: sinkA.text().slice(0, 40) });
+    reg3.unsubscribe(room, subA.id, 'test');
+    reg3.unsubscribe(room, subSpec.id, 'test');
+
+    // 3) 认输之后「再来一局」不能开局即判负
+    reg3.setReady(room.code, 'A', aTok, true);
+    const st1 = await reg3.start(room.code, { token: aTok });
+    ok(st1.ok, '准备好就能开局', st1);
+    ok(room.state === 'playing', '开局后进入 playing');
+    const st2 = await reg3.start(room.code, { token: aTok });
+    ok(st2.ok === false, '重复开局被拒（不会起两条推演）', st2);
+    reg3.resign(room.code, 'A', aTok);
+    await waitFor(() => room.state === 'finished' || room.state === 'aborted', 8000, 'resign');
+    reg3.rearm(room);
+    ok(Object.keys(room.resigned || {}).length === 0, '重开时认输标记被清掉');
+    room.seats.A.ready = true; room.seats.B.ready = true;
+    const st3 = await reg3.start(room.code, { token: aTok });
+    ok(st3.ok, '认输后可以正常再来一局', st3);
+    reg3.close(room.code);
   }
 
   console.log(fail === 0 ? '==> ALL PASS' : '==> FAIL ' + fail);

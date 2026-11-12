@@ -85,6 +85,29 @@ function normalizePolicy(p = {}) {
 
 /* 返回 {ok:true, host, ips, href} 或 {ok:false, reason}。
    注意：DNS 结果与实际请求之间仍有重绑定窗口；要更硬就把出网走独立代理 + 白名单。 */
+/* 本机端口别名：主人在配置里写「家里的 1235」，公网服务器上没有 1235，
+ * 但有一条到家里的隧道（默认 18444）。这里把 loopback:1235 映射到隧道口，
+ * 于是「填 127.0.0.1:1235」在云上也能用，而且流量只走隧道，不对外暴露。
+ * 只对主人账号生效（调用方负责判断），映射表可由 DICE_PORT_ALIAS="1235=18444,1236=18445" 覆盖。 */
+function aliasLoopback(base, map, opts = {}) {
+  const onlyOwnerHosts = opts.hosts || ['127.0.0.1', 'localhost', '::1'];
+  let u;
+  try { u = new URL(String(base)); } catch (e) { return { base, aliased: false }; }
+  if (!onlyOwnerHosts.includes(u.hostname)) return { base, aliased: false };
+  const from = +u.port || (u.protocol === 'https:' ? 443 : 80);
+  if (!map || !map[from]) return { base, aliased: false };
+  u.port = String(map[from]);
+  return { base: u.toString().replace(/\/$/, ''), aliased: true, from, to: map[from] };
+}
+function parsePortAlias(str) {
+  const out = {};
+  for (const part of String(str || '').split(',')) {
+    const m = part.match(/^\s*(\d+)\s*=\s*(\d+)\s*$/);
+    if (m) out[+m[1]] = +m[2];
+  }
+  return out;
+}
+
 async function checkEgress(baseUrl, policy = {}) {
   const P = normalizePolicy(policy);
   const t = parseTarget(baseUrl);
@@ -130,4 +153,5 @@ function describeSeatForLog(spec = {}) {
   return host + ' · ' + (spec.model || '未知模型');
 }
 
-module.exports = { checkEgress, parseTarget, normalizePolicy, blockedIp, describeSeatForLog, BLOCKED_HOSTNAMES };
+module.exports = {
+  aliasLoopback, parsePortAlias, checkEgress, parseTarget, normalizePolicy, blockedIp, describeSeatForLog, BLOCKED_HOSTNAMES };

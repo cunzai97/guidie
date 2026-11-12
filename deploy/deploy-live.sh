@@ -17,6 +17,10 @@ rsync -av --delete \
 # 你本机 8790/8791 那种网关地址在云上根本到不了，别把它传上去。
 ssh "$DEST" "test -f ~/$DIR/presets.json || printf '{\"presets\":[],\"settings\":{},\"seat\":{}}\n' > ~/$DIR/presets.json"
 
+# 静态资源版本号：每次部署换个时间戳，浏览器就不会拿老的 play.js 配新的 play.html
+V=$(date +%s)
+ssh "$DEST" "cd ~/$DIR && sed -i -E 's/\?v=[0-9]+/?v=$V/g' web/play.html && grep -c \"?v=$V\" web/play.html"
+
 cat <<EOS
 
 代码已推到 ${DEST}:~/${DIR}。剩下三步要你自己在云上执行（要 root）：

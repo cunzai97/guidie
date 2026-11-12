@@ -58,15 +58,28 @@ function nickClean(s) {
 function blankSeat() {
   return {
     kind: 'open', nick: '', token: null, userId: null, bot: null,
+    // ready：真人自己点「准备」；把模型放上对战席 = 自动准备（放置的人负责，不用再点）
+    // placed：这一座是「被放置的模型/人机」，不是本人亲自出马
+    ready: false, placed: false,
     baseUrl: null, model: null, alias: null, secretToken: null,
     guideText: '', guideChars: 0, effort: null, thinking: null, maxTokens: 0, temperature: null,
     connected: 0, host: null, armId: null, promptHash: null, hasKey: false,
   };
 }
 function registry_chairOfPlan(room, plan) { return room.chairPlan.A === plan ? 'A' : 'B'; }
+/* 谁能看到什么（潘潘定的规则）：
+ *   · 不亲自出马（观战 / 房主令牌进来的人）= 全知：双方骰子、双方推演、全部事件都看得到。
+ *   · 亲自出马（坐在座位里打）= 只看自己那一侧：座位私有事件只发给自己，别人的推演不外泄。
+ * 注意：观战全知意味着场外的人可以把牌面转告给场内玩家 —— 朋友局里没问题，正式比赛别这么开。 */
 function visibleTo(role, scope) {
   if (scope === 'all') return true;
-  if (role === 'spec') return false;
+  if (scope === 'omni') return role === 'spec' || role === 'host';        // 全知通道：只给观战/房主
+  const watching = role === 'spec' || role === 'host';
+  if (scope === 'thinkA' || scope === 'thinkB') {
+    const seat = scope === 'thinkA' ? 'A' : 'B';
+    return watching || role === seat;                                     // 推演：观战全知 + 本座自己
+  }
+  if (watching) return true;                                              // 观战/房主要的全知：其余私有事件也给他
   return scope === role || scope === 'players';
 }
 function writeSSE(res, e) {
@@ -93,6 +106,10 @@ class Registry {
       code, title: String(cfg.title || '').slice(0, 40),
       createdAt: now(), lastActive: now(), emptySince: 0,
       ownerId: owner ? owner.id : null,
+      // 房主控制令牌：谁建了这桌谁就能开局 / 关桌。两座都不是「真人」时（模型 vs 人机、
+      // 模型 vs 模型）没有座位令牌可发，之前创建者反而开不了局 —— 这令牌补上这个缺口。
+      // 它只用于开局/关桌，不能替任何座位落子或认输；也绝不出现在 info() / 事件流里。
+      hostToken: seatToken(),
       rulesId, rules: RS.normalize(custom || rulesId),
       hpMax: Math.min(40, Math.max(1, +cfg.hpMax || 8)),
       maxRounds: Math.min(300, Math.max(3, +cfg.maxRounds || 60)),
@@ -104,6 +121,12 @@ class Registry {
       reflectAfter: Math.min(20, Math.max(0, +cfg.reflectAfter || 0)),
       passHash: cfg.pass ? crypto.createHash('sha256').update(String(cfg.pass)).digest('hex') : null,
       state: 'lobby', seats: { A: blankSeat(), B: blankSeat() },
+      // 3 个观战席：观战看得到全部信息（不亲自出马 = 全知）
+      watch: { S1: blankSeat(), S2: blankSeat(), S3: blankSeat() },
+      // mode: 'invite' 邀请制房间（对面那一席只能靠邀请链接入座）
+      //       'solo'   个人演武场（不进公开列表，AI 座默认准备，建好就能开）
+      mode: cfg.mode === 'solo' ? 'solo' : 'invite',
+      unlisted: cfg.mode === 'solo' || !!cfg.unlisted,
       actors: {}, chairPlan: { A: 'A', B: 'B' }, m: null,
       seedBase: (crypto.randomBytes(4).readUInt32BE(0) & 0x3fffffff) || 1,
       events: [], nextEventId: 1, subs: new Map(), subSeq: 1,
@@ -127,7 +150,7 @@ class Registry {
   }
   get(code) { return this.rooms.get(String(code || '').toUpperCase()) || null; }
   listPublic() {
-    return [...this.rooms.values()].filter(r => r.state === 'lobby' && !r.passHash)
+    return [...this.rooms.values()].filter(r => r.state === 'lobby' && !r.passHash && !r.unlisted)
       .map(r => ({ code: r.code, title: r.title, seats: { A: r.seats.A.kind, B: r.seats.B.kind }, createdAt: r.createdAt, rulesId: r.rulesId, hpMax: r.hpMax }));
   }
 
@@ -147,6 +170,7 @@ class Registry {
       if (!BOTS[spec.bot || 'reader']) throw new Error('未知人机：' + spec.bot);
       s.bot = spec.bot || 'reader';
       s.nick = BOTS[s.bot].label || s.bot;
+      s.ready = true; s.placed = true; s.userId = owner ? owner.id : null;
       return s;
     }
     if (kind === 'llm' || kind === 'preset') {
@@ -183,6 +207,7 @@ class Registry {
       s.thinking = g.thinking !== false;
       s.maxTokens = Math.min(65536, Math.max(256, +g.maxTokens || 8192));
       s.temperature = Math.min(2, Math.max(0, +g.temperature || 0.7));
+      s.ready = true; s.placed = true; s.userId = owner ? owner.id : null;   // 放上模型 = 默认准备
       return s;
     }
     throw new Error('未知座位类型：' + kind);
@@ -200,9 +225,170 @@ class Registry {
     const s = room.seats[w];
     s.kind = 'me'; s.nick = nickClean(nick || (user && user.nick)); s.userId = user ? user.id : null;
     s.token = seatToken();
+    // 从观战席挪到对战席：把原来那张观战席空出来，一个人只占一个位置
+    if (user) this.dropWatchOf(room, user.id);
     room.lastActive = now();
     this.emit(room, 'room', { kind: 'seat', seat: w, nick: s.nick, room: this.info(room) }, 'all');
     return { ok: true, seat: w, token: s.token, room: this.info(room) };
+  }
+  /* 房主能不能以「观战/全知」身份看这一桌：亲自坐进座位之后就不能。
+     潘潘的规则：亲自出马就只能看自己那一侧 —— 房主也不例外，否则房主可以一边打一边开
+     第二个连接用全知通道看对面的牌。坐在座位里的判定：这条连接的座位令牌有效，或登录账号
+     已占着某一席。 */
+  /* 有没有人「在看」：观战席上坐了人，或有 spec 视角的订阅（观战页/房主全知连接）。
+     人机延迟、以及「要不要放慢」都看这个。 */
+  watcherCount(room) {
+    let n = 0;
+    for (const slot of ['S1', 'S2', 'S3']) { const w = (room.watch || {})[slot]; if (w && w.kind === 'me') n++; }
+    for (const v of room.subs.values()) { if (v && v.role === 'spec') n++; }
+    return n;
+  }
+  // 人机每步的思考时间；DICE_BOT_DELAY_MS=0 可整体关掉
+  botDelayMs() {
+    const v = process.env.DICE_BOT_DELAY_MS;
+    if (v != null && v !== '') { const n = +v; return Number.isFinite(n) ? Math.max(0, n) : 900; }
+    return 900;
+  }
+  /* 观战席：默认进来就是观战（不亲自出马 = 全知）。3 席满了就退回「无席观战」，照样能看。 */
+  watchSeat(code, { nick, pass, user, watchToken } = {}) {
+    const room = this.get(code);
+    if (!room) return { ok: false, reason: '房间不存在或已关闭' };
+    // 已经在对战席上的人，不再给观战席：不能「一边打一边看」
+    if (user) for (const p of ['A', 'B']) {
+      const s = room.seats[p];
+      if (s && s.kind === 'me' && s.userId && s.userId === user.id) {
+        return { ok: true, slot: null, token: null, room: this.info(room), reason: '你坐在' + (p === 'A' ? '甲' : '乙') + '方对战席上，观战席就不占位了' };
+      }
+    }
+    if (room.passHash && crypto.createHash('sha256').update(String(pass || '')).digest('hex') !== room.passHash) {
+      return { ok: false, reason: '房间口令不对' };
+    }
+    // 已经在观战席上就复用那一席（按 watchToken / 账号 / 昵称三种认法，
+    // 否则匿名观众刷新一次邀请链接就多占一席，三席很快被同一个人占满）
+    const nm = nickClean(nick || (user && user.nick));
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (w.kind !== 'me') continue;
+      if (watchToken && w.token && w.token === watchToken) return { ok: true, slot, token: w.token, room: this.info(room) };
+      if (user && w.userId === user.id) return { ok: true, slot, token: w.token, room: this.info(room) };
+      if (!user && !w.userId && nm && w.nick === nm) return { ok: true, slot, token: w.token, room: this.info(room) };
+    }
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (w.kind === 'open') {
+        w.kind = 'me'; w.nick = nickClean(nick || (user && user.nick)); w.userId = user ? user.id : null; w.token = seatToken();
+        room.lastActive = now();
+        this.emit(room, 'room', { kind: 'watch', slot, nick: w.nick, room: this.info(room) }, 'all');
+        return { ok: true, slot, token: w.token, room: this.info(room) };
+      }
+    }
+    return { ok: true, slot: null, token: null, room: this.info(room), reason: '观战席满了，你以「站票」观战：照样看得到全部信息' };
+  }
+  checkWatchToken(room, token) {
+    for (const slot of ['S1', 'S2', 'S3']) { const w = room.watch[slot]; if (w.kind === 'me' && w.token && token && w.token === token) return slot; }
+    return null;
+  }
+  /* 准备 / 取消准备：只有真人席位需要点，AI 席位放置即准备 */
+  /* 主动离开：把这个人从对战席 / 观战席上摘掉。
+     之前「离开」只是前端断开，服务端那条 me 席位还挂着，别人看到的就是「虚空的我」。 */
+  leave(code, { user, token } = {}) {
+    const room = this.get(code);
+    if (!room) return { ok: true, gone: true };
+    const iAm = p => {
+      const s = room.seats[p];
+      return s && s.kind === 'me' && ((token && this.checkSeatToken(room, p, token)) || (user && s.userId && s.userId === user.id));
+    };
+    const seated = ['A', 'B'].filter(iAm);
+    if (seated.length && room.state === 'playing') {
+      return { ok: false, reason: '这一局还在打：先认输，或者等这局结束再走' };
+    }
+    for (const p of seated) room.seats[p] = blankSeat();
+    if (user) this.dropWatchOf(room, user.id);
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (w && w.kind === 'me' && token && w.token === token) room.watch[slot] = blankSeat();
+    }
+    room.lastActive = now();
+    // 人都走光了就把这张桌收掉，别留空壳
+    const empty = room.state === 'lobby' && room.seats.A.kind === 'open' && room.seats.B.kind === 'open'
+      && !['S1', 'S2', 'S3'].some(slot => room.watch[slot].kind === 'me');
+    if (empty) { this.close(code); return { ok: true, closed: true }; }
+    this.emit(room, 'room', { kind: 'leave', room: this.info(room) }, 'all');
+    return { ok: true, seat: seated[0] || null, room: this.info(room) };
+  }
+  /* 坐进对战席 / 让位时，顺手清掉这个人的观战席，避免同一个人占两个位置 */
+  dropWatchOf(room, userId) {
+    if (!userId) return;
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (w && w.kind === 'me' && w.userId === userId) { room.watch[slot] = blankSeat(); }
+    }
+  }
+  setReady(code, plan, token, ready) {
+    const room = this.get(code);
+    if (!room) return { ok: false, reason: '房间不存在' };
+    if (room.state === 'playing' || room.state === 'finished') return { ok: false, reason: '这一桌已经在打了' };
+    const s = room.seats[plan];
+    if (!s) return { ok: false, reason: '没有这一席' };
+    if (s.kind !== 'me' || !this.checkSeatToken(room, plan, token)) return { ok: false, reason: '这一席不是你的（只有本人席能点准备）' };
+    s.ready = !!ready;
+    room.lastActive = now();
+    this.emit(room, 'room', { kind: 'ready', seat: plan, ready: s.ready, room: this.info(room) }, 'all');
+    return { ok: true, room: this.info(room) };
+  }
+  /* 把模型 / 人机放上对战席（席位必须是空的）。放上去即准备。 */
+  placeSeat(code, { seat, seatSpec, user, host } = {}) {
+    const room = this.get(code);
+    if (!room) return { ok: false, reason: '房间不存在' };
+    if (room.state === 'playing') return { ok: false, reason: '这一桌已经在打了' };
+    if (!(user && room.ownerId === user.id) && !(host && room.hostToken === host) && !(user && room.seats[seat] && room.seats[seat].userId === user.id)) {
+      return { ok: false, reason: '只有房主能把模型放上这一席' };
+    }
+    const w = seat === 'B' ? 'B' : 'A';
+    if (room.seats[w].kind !== 'open') return { ok: false, reason: (w === 'A' ? '甲方' : '乙方') + '已经有人了' };
+    const s = this.planSeat(room, w, Object.assign({ kind: 'llm' }, seatSpec || {}), user || null);
+    room.seats[w] = s;
+    room.lastActive = now();
+    this.emit(room, 'room', { kind: 'place', seat: w, room: this.info(room) }, 'all');
+    return { ok: true, seat: w, room: this.info(room) };
+  }
+  /* 把模型/人机放下（清空这一席）：房主或放置它的人可以。 */
+  unplaceSeat(code, { seat, user, host, token } = {}) {
+    const room = this.get(code);
+    if (!room) return { ok: false, reason: '房间不存在' };
+    if (room.state === 'playing') return { ok: false, reason: '打着的时候不能动席位' };
+    const w = seat === 'B' ? 'B' : 'A';
+    const s = room.seats[w];
+    if (!s || s.kind === 'open') return { ok: false, reason: '这一席本来就空着' };
+    const isOwner = (user && room.ownerId === user.id) || (host && room.hostToken === host);
+    const isPlacer = !!(user && s.userId && s.userId === user.id);
+    const isSelf = !!(token && this.checkSeatToken(room, w, token));
+    if (!(isOwner || isPlacer || isSelf)) return { ok: false, reason: '只有房主或放置这一席的人能把它放下' };
+    if (s.kind === 'me' && !isSelf) return { ok: false, reason: '真人坐在这一席：要离开得是本人点离开' };
+    room.seats[w] = blankSeat();
+    room.lastActive = now();
+    this.emit(room, 'room', { kind: 'unplace', seat: w, room: this.info(room) }, 'all');
+    return { ok: true, room: this.info(room) };
+  }
+  /* 观战（spec）连接的准入：坐在对战席里的人不能开全知连接 —— 否则「亲自出马只能看自己」
+     只要多开一个 ?role=spec 就绕过去了。观战席、站票不受影响。 */
+  specMayWatch(room, { user, token } = {}) {
+    for (const p of ['A', 'B']) {
+      const s = room.seats[p];
+      if (!s) continue;
+      const mine = (token && this.checkSeatToken(room, p, token)) || (user && s.kind === 'me' && s.userId && s.userId === user.id);
+      if (mine) return { ok: false, reason: '你坐在' + (p === 'A' ? '甲' : '乙') + '方对战席上：亲自出马就只能看自己那一侧，不能再用观战身份看对面的信息' };
+    }
+    return { ok: true };
+  }
+  hostMayWatch(room, { user, token } = {}) {
+    const seatedByToken = !!(token && (this.checkSeatToken(room, 'A', token) || this.checkSeatToken(room, 'B', token)));
+    const seatedByUser = !!(user && ((room.seats.A.userId && room.seats.A.userId === user.id)
+      || (room.seats.B.userId && room.seats.B.userId === user.id)));
+    if (seatedByToken || seatedByUser) return { ok: false, reason: '你已经坐在这一桌里了：亲自出马就只能看自己那一侧，不能再用房主身份看对面的信息' };
+    const isHost = (room.hostToken && token && room.hostToken === token) || (user && room.ownerId === user.id);
+    if (!isHost) return { ok: false, reason: '不是这一桌的房主' };
+    return { ok: true };
   }
   checkSeatToken(room, plan, token) {
     const s = room.seats[plan];
@@ -219,7 +405,12 @@ class Registry {
         const plan = this.planOfChair(room, chair);
         this.emit(room, 'ask', Object.assign({ chair, you: plan, view }, meta), plan);
       },
-      notice: (chair, note) => this.emit(room, 'notice', Object.assign({}, note, { seat: this.planOfChair(room, chair) }), 'all'),
+      notice: (chair, note) => {
+        const plan = this.planOfChair(room, chair);
+        this.emit(room, 'notice', Object.assign({}, note, {
+          seat: plan, nick: room.seats[plan] ? room.seats[plan].nick : null,
+        }), 'all');
+      },
     };
     const actors = {};
     for (const w of ['A', 'B']) {
@@ -227,7 +418,21 @@ class Registry {
       if (s.kind === 'me') {
         actors[w] = makeHumanPlayer({ nick: s.nick, timeoutMs: room.turnMs, onTimeout: room.onTimeout, io });
       } else if (s.kind === 'bot') {
-        actors[w] = makeBot(s.bot, Math.random);
+        // 人机瞬间出招，两台对打时人眼根本跟不上：有人在看就给人机加一点思考时间。
+        // 没观众（跑批 / 自检）不延迟，测试速度不受影响。
+        const base = makeBot(s.bot, Math.random);
+        const other = w === 'A' ? 'B' : 'A';
+        const decide0 = base.decide.bind(base);
+        base.decide = async (...args) => {
+          // 有人看着（观战席/全知连接）、或对手是真人时，人机才「想一想」：
+          // 否则它一秒能连开好几手，血掉得莫名其妙。纯跑批/自检两边都是机器，不延迟。
+          const watched = !!room.watchExpected || this.watcherCount(room) > 0
+            || (room.seats[other] && room.seats[other].kind === 'me');
+          const d = this.botDelayMs();
+          if (watched && d > 0) await new Promise(r => setTimeout(r, Math.round(d * (0.6 + Math.random() * 0.8))));
+          return decide0(...args);
+        };
+        actors[w] = base;
       } else if (s.kind === 'llm' || s.kind === 'preset') {
         if (s.kind === 'llm') {
           const chk = await GW.checkEgress(s.baseUrl, this.opts.policy);
@@ -264,9 +469,7 @@ class Registry {
           reg.emitRound(room, m);
         }
         const act = await actor.decide(m, who, memos, meta);
-        for (const a of ((act && act.attempts) || [])) {
-          room.usedTokens = (room.usedTokens || 0) + (a.promptTokens || 0) + (a.completionTokens || 0);
-        }
+        // 用量只在 onSeatLog 里累计一次（每次模型调用都会推一条）；这里再累一遍会把预算算成两倍
         if (budget && room.usedTokens > budget) {
           throw new Error('本桌 token 预算 ' + budget + ' 已用尽（当前 ' + room.usedTokens + '）');
         }
@@ -287,6 +490,13 @@ class Registry {
       t.cachedTokens += rec.cachedTokens || 0;
       room.usedTokens = (room.usedTokens || 0) + (rec.promptTokens || 0) + (rec.completionTokens || 0);
       this.emit(room, 'usage', { plan, calls: t.calls, promptTokens: t.promptTokens, completionTokens: t.completionTokens, usedTokens: room.usedTokens, ms: t.ms }, 'all');
+      // 这一座的实时推演流：模型这一手到底说了什么（只发给这一座 + 房主，见 visibleTo）
+      const raw = typeof rec.content === 'string' ? rec.content.trim() : '';
+      if (raw) this.emit(room, 'think', {
+        seat: plan, text: raw.slice(0, 1600), truncated: raw.length > 1600,
+        phase: rec.phase || null, ms: rec.ms || 0, tokens: rec.completionTokens || 0,
+        finish: rec.finish || null, reasonChars: rec.reasonChars || 0, at: now(),
+      }, 'think' + plan);
     } else if (rec.kind === 'conn-error') {
       t.errors++;
       this.emit(room, 'seatwarn', { plan, attempt: rec.attempt || null, error: rec.error || '' }, 'all');
@@ -320,20 +530,31 @@ class Registry {
   }
 
   /* ---------------- 开局 / 再来一局 ---------------- */
-  async start(code, { token, user } = {}) {
+  async start(code, { token, user, host } = {}) {
     const room = this.get(code);
     if (!room) return { ok: false, reason: '房间不存在' };
     if (room.state === 'playing') return { ok: false, reason: '这桌正在打' };
-    const holder = (token && (this.checkSeatToken(room, 'A', token) || this.checkSeatToken(room, 'B', token))) || (user && room.ownerId === user.id);
-    if (!holder) return { ok: false, reason: '只有坐上来的人能开局' };
+    const holder = (token && (this.checkSeatToken(room, 'A', token) || this.checkSeatToken(room, 'B', token)))
+      || (user && room.ownerId === user.id)
+      || (host && room.hostToken && room.hostToken === host);
+    if (!holder) return { ok: false, reason: '只有建桌的人或坐上来的人能开局——用邀请链接进来，或登录后再开' };
     if (room.state === 'finished') this.rearm(room);
     if (room.seats.A.kind === 'open' || room.seats.B.kind === 'open') {
-      return { ok: false, reason: '还有空位：邀请好友入座，或把那一座换成模型 / 人机' };
+      return { ok: false, reason: '还有空位：邀请好友入座，或把那一座放上模型 / 人机' };
+    }
+    if (!room.seats.A.ready || !room.seats.B.ready) {
+      const who = !room.seats.A.ready ? '甲方' : '乙方';
+      return { ok: false, reason: who + '还没准备：两边都点了准备才能开局' };
     }
     room.usedTokens = 0;
+    room.resigned = {};        // 上一局的认输标记必须清掉，否则「再来一局」开局即判负
     room.tally = { A: blankTally(), B: blankTally() };
-    const built = await this.buildActors(room);
-    if (!built.ok) return built;
+    // 建演员是异步的（要做出网检查）：先占住状态，双击 / 多标签同时点也只会起一条 runSeries
+    room.state = 'starting';
+    let built;
+    try { built = await this.buildActors(room); }
+    catch (e) { room.state = 'lobby'; throw e; }
+    if (!built.ok) { room.state = 'lobby'; return built; }
     room.actors = built.actors;
     room.state = 'playing';
     room.startedAt = now();
@@ -348,6 +569,7 @@ class Registry {
   }
   rearm(room) {
     room.state = 'lobby';
+    room.resigned = {};        // 同上：认输过的桌重开时要能正常打
     room.m = null; room.lastRoundSeen = 0;
     room.seedBase = (crypto.randomBytes(4).readUInt32BE(0) & 0x3fffffff) || 1;
     room.games = []; room.net = { A: 0, B: 0 }; room.usedTokens = 0;
@@ -418,19 +640,47 @@ class Registry {
     // Key 不在这里销毁：「再来一局」还要用同一份配置，令牌留到关桌（close）时回收
   }
 
+  /* 观战/房主的「全知」负载：两边骰子、当前喊价、轮到谁、血量。
+   只走 scope='omni'，坐在座位里的人拿不到 —— 他只能看到自己那一侧。 */
+  omniPayload(room) {
+    const m = room.m; if (!m) return null;
+    const r = m.round || {};
+    const diceOf = pl => { const ch = this.chairOfPlan(room, pl); return r.dice ? (r.dice[ch] || null) : null; };
+    return {
+      round: m.roundNo, over: !!m.over, zhai: !!r.zhai, winner: m.winner || null,
+      turn: r.turn ? this.planOfChair(room, r.turn) : null,
+      bid: r.bid ? { seat: this.planOfChair(room, r.bid.by), count: r.bid.count, face: r.bid.face, zhai: !!r.bid.zhai, mode: r.bid.mode || null } : null,
+      dice: { A: diceOf('A'), B: diceOf('B') },
+      hp: this.hpByPlan(room, m), hpMax: m.hpMax,
+    };
+  }
+  emitOmni(room) { const p = this.omniPayload(room); if (p) this.emit(room, 'omni', p, 'omni'); }
+
   onMatchEvent(room, ev) {
     const clean = V.sanitizeEvent(ev);
     const plan = this.planOfChair(room, ev.who);
     clean.seat = plan;
     clean.nick = room.seats[plan] ? room.seats[plan].nick : null;
-    if (ev.kind === 'bid') { this.emit(room, 'bid', clean, 'all'); return; }
+    if (ev.kind === 'bid') { this.emit(room, 'bid', clean, 'all'); this.emitOmni(room); return; }
     if (ev.kind === 'open') {
       const h = room.m ? room.m.history[room.m.history.length - 1] : null;
       clean.truth = ev.truth;              // 这时候已亮牌，真值可以公布
       clean.hp = this.hpByPlan(room, room.m);
-      clean.reveal = h && h.dice ? { A: room.seats[room.chairPlan.A].nick, B: room.seats[room.chairPlan.B].nick,
-        dice: { A: h.dice.A, B: h.dice.B }, actual: h.actual, wild: h.wild, all: h.all } : null;
+      clean.stake = h && h.stake ? h.stake : 1;     // 这一手掉多少血：给界面写「−1 血（剩 7）」
+      clean.openedBy = plan;                                      // 开盅的人
+      clean.bidBy = h && h.bid ? this.planOfChair(room, h.bid.by) : null;   // 被开的那手是谁喊的
+      clean.hpMax = room.m ? room.m.hpMax : room.hpMax;
+      // 亮牌按「座位(plan)」给键，不用 chair：复式换座时 chair 和 plan 会错位，
+      // 直接给 chair 的话界面会把对面的骰子画到自己这一栏。
+      clean.reveal = h && h.dice ? (() => {
+        const pA = this.planOfChair(room, 'A'), pB = this.planOfChair(room, 'B');
+        return {
+          A: room.seats[pA] ? room.seats[pA].nick : '甲', B: room.seats[pB] ? room.seats[pB].nick : '乙',
+          dice: { [pA]: h.dice.A, [pB]: h.dice.B }, actual: h.actual, wild: h.wild, all: h.all,
+        };
+      })() : null;
       this.emit(room, 'open', clean, 'all');
+      this.emitOmni(room);
       return;
     }
     if (ev.kind === 'forfeit' || ev.kind === 'error') { this.emit(room, 'abandon', clean, 'all'); return; }
@@ -471,6 +721,15 @@ class Registry {
   }
 
   /* ---------------- 事件总线（SSE）---------------- */
+  /* 只发给一条连接（不进事件缓冲）：握手这种「跟你自己有关」的消息不能被别的连接收到，
+     否则在座玩家会收到一条 you:'spec' 的 hello，误以为自己是观战，把座位令牌丢掉。 */
+  emitTo(room, subOrId, type, payload) {
+    const sub = typeof subOrId === 'string' ? room.subs.get(subOrId) : subOrId;
+    if (!sub) return null;
+    const e = { id: room.nextEventId++, t: now(), type, scope: sub.role, payload };
+    writeSSE(sub.res, e);
+    return e;
+  }
   emit(room, type, payload, scope) {
     room.lastActive = now();
     const e = { id: room.nextEventId++, t: now(), type, scope: scope || 'all', payload };
@@ -490,6 +749,8 @@ class Registry {
     room.subs.set(id, sub);
     room.lastActive = now();
     if (role === 'A' || role === 'B') {
+      const st = room.seats[role];
+      if (st.offlineTimer) { clearTimeout(st.offlineTimer); st.offlineTimer = null; }   // 宽限期内回来了：取消自动接手
       room.seats[role].connected = (room.seats[role].connected || 0) + 1;
       this.emit(room, 'presence', { seat: role, nick: room.seats[role].nick, online: true }, 'all');
     }
@@ -542,7 +803,15 @@ class Registry {
       s.connected = Math.max(0, (s.connected || 0) - 1);
       const a = this.actorOfPlan(room, sub.role);
       this.emit(room, 'presence', { seat: sub.role, nick: s.nick, online: s.connected > 0, reason: reason || 'left' }, 'all');
-      if (s.connected === 0 && a && a.giveUp) a.giveUp(reason || 'offline');
+      if (s.connected === 0 && a && a.giveUp) {
+        // 最小化、切标签、网络抖一下都会短暂断开：给 15 秒宽限，回来就取消，
+        // 不能一断线就替他自动落子/认输。
+        clearTimeout(s.offlineTimer);
+        s.offlineTimer = setTimeout(() => {
+          s.offlineTimer = null;
+          if ((s.connected || 0) === 0) a.giveUp(reason || 'offline');
+        }, +(process.env.DICE_OFFLINE_GRACE_MS || 15000));
+      }
     }
     if (!room.subs.size) room.emptySince = now();
     room.lastActive = now();
@@ -564,6 +833,7 @@ class Registry {
         thinking: (s.kind === 'llm' || s.kind === 'preset') ? s.thinking : null,
         // SSE 订阅数 与 轮询心跳 任一条在，都算这个人还在桌上
         connected: Math.max(s.connected || 0, (room.pollAt && now() - (room.pollAt[p] || 0) < POLL_ALIVE_MS) ? 1 : 0),
+        ready: !!s.ready, placed: !!s.placed, owned: !!s.userId,
       };
     };
     return {
@@ -574,6 +844,12 @@ class Registry {
       turnMs: room.turnMs, onTimeout: room.onTimeout, duplicate: room.duplicate, deals: room.deals,
       tokenBudget: room.tokenBudget, usedTokens: room.usedTokens || 0,
       seats: { A: seat('A'), B: seat('B') },
+      mode: room.mode || 'invite',
+      watchers: this.watcherCount(room),   // 几个在看（观战席 + 全知连接）：人机延迟也看这个
+      watch: ['S1', 'S2', 'S3'].map(slot => {
+        const w = (room.watch || {})[slot] || {};
+        return { slot, kind: w.kind || 'open', nick: w.kind === 'me' ? (w.nick || '') : '', connected: w.connected || 0 };
+      }),
       games: room.games, net: room.net, lastMs: room.lastMs || 0,
       roundNo: room.m ? room.m.roundNo : 0, hp: this.hpByPlan(room, room.m),
       you: undefined,

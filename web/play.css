@@ -626,6 +626,13 @@ html[data-theme="light"] .log .lg.hd { background: #faf4e6; color: #8a6a20; }
 .zhai-grp .modes-chips button.no { opacity: .38; text-decoration: none; cursor: not-allowed; }
 .zhai-hint { font: 400 11px/1.5 var(--sans); color: var(--faint); margin-top: 6px; max-width: 34ch; }
 html[data-theme="light"] .zhai-hint { color: #8b806c; }
+/* 灰掉的档位要把「为什么」写在开关下面：手机上没有 hover，光靠 title 等于没写 */
+.why {
+  font: 500 12px/1.5 var(--sans); color: var(--gold2); margin-top: 7px; max-width: 42ch;
+  padding: 6px 9px; border-left: 2px solid rgba(var(--g),.5);
+  background: rgba(var(--g),.07); border-radius: 0 8px 8px 0;
+}
+html[data-theme="light"] .why { color: #7a5c14; background: #faf1dd; }
 html[data-theme="light"] .mini-line .tag { background: #f6efdf; }
 html[data-theme="light"] .mini-line .tag.on { background: #fbf1d9; color: #8a6a20; border-color: rgba(169,123,35,.45); }
 
@@ -636,3 +643,104 @@ html[data-theme="light"] .mini-line .tag.on { background: #fbf1d9; color: #8a6a2
     0 1px 2px rgba(120,95,40,.25), 0 10px 16px -10px rgba(120,95,40,.7);
 }
 .die.wild i.on { background: radial-gradient(circle at 34% 28%, #c99a3a, #8a6320 72%); }
+
+/* ============================================================
+   手机模式（≤820px）—— 同一份代码的第二种布局，不是第二个前端
+   1) 出价区吸底常驻：轮到你时不用往下滚一屏才能落子（原来出价键在乙方卡片之后）
+   2) 单列顺序改成 我方 → 牌桌 → 对手；我坐乙方时由 .arena.me-b 换算，观战保持原序
+   3) 顶栏不许把按钮文字压成竖排；触控目标 ≥44px；正文最小 12px
+   4) 刘海与圆角：吸底层留 env(safe-area-inset-bottom)；装饰动画在窄屏关掉
+   自检：tests/ui-round-cycle.js 会跑 WIN=390,844，断言「轮到我时走这一步在视口内」
+   ============================================================ */
+.top { flex-wrap: wrap; }
+.btn.sm { white-space: nowrap; flex: none; }
+
+@media (max-width: 1180px) {
+  /* 取消「牌桌抢在最前」：窄屏第一屏该是我这一栏 + 出价区，不是中央展示区 */
+  .arena .table-center { order: 0; }
+  .arena.me-b .fighter.seat-b { order: -1; }
+  .arena.me-b .fighter.seat-a { order: 1; }
+}
+
+@media (max-width: 820px) {
+  main { padding: 12px 12px 8px; }
+  .top { padding: 10px 12px; gap: 8px; }
+  .chip { white-space: nowrap; padding: 5px 10px; }   /* 状态牌不折行，否则在手机上胀成一个高圆饼，白吃两行 */
+  /* 右侧那一组是不换行的嵌套 flex：三个按钮 + 两个状态牌在 390px 下会伸出屏幕被裁掉
+     （实测内容 465px > 390px，「账号」整个看不见），手机上必须允许它换行 */
+  .topright { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; min-width: 0; }
+  .top .chip { font-size: 12px; }
+  .brand-txt span { display: none; }              /* 副标题在手机上没有信息量，只挤位置 */
+  .brand { gap: 8px; }
+  .top .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; }
+
+  /* 出价区常驻底部：JS 在窄屏不再把它搬进卡片（见 play.js 的 isCompact 分支） */
+  .actionbar {
+    position: sticky; bottom: 0; z-index: 35; margin: 10px 0 0;
+    padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, rgba(var(--panel),0), rgba(var(--panel),.94) 34%);
+    /* 硬上界：吸底层最多吃掉 46% 屏高，再多就在层内滚，不能把牌桌整张顶掉 */
+    max-height: 46vh; overflow-y: auto; overscroll-behavior: contain;
+  }
+  /* 单列网格：flex 在这里会把三组开关横向压缩，芯片换行反而更高（实测 62px 的组变 114px）。
+     网格强制每组占满一行，高度可预期。 */
+  .action { display: grid; grid-template-columns: 1fr; gap: 6px 12px; align-items: start; padding: 9px 12px; }
+  .action .grp { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; align-items: center; }
+  .action .grp > .lab { grid-column: 1 / -1; }
+  .action .grp:last-child { display: block; }
+  .action .grp { gap: 4px; }
+  .action .why { margin-top: 4px; padding: 5px 8px; }
+  .action .preview { margin-top: 2px; }
+  .action .chips button { min-width: 52px; min-height: 46px; padding: 10px 8px; font-size: 14px; }
+  .action .btn, .action .btn.big { min-height: 46px; padding: 0 16px; font-size: 14px; }
+  .action .lab { letter-spacing: 1.2px; }   /* 字号交给下面的 12px 下限统一管 */
+  .action .preview, .action .zhai-hint { font-size: 12px; }
+  .action .why { font-size: 12px; }
+
+  .fighter { padding: 14px 14px 12px; gap: 10px; }
+  .think-body { max-height: 20vh; }
+  .tabs button { min-height: 44px; padding: 0 12px; font-size: 13px; }
+  .seat-card { padding: 14px; }
+  .seat-acts .btn, .put-row .btn, .row-actions .btn { min-height: 44px; }
+  .joinbar { grid-template-columns: 1fr; }
+  .gate .btn, .hero .btn { min-height: 46px; }
+  .list .row, .list.small .row { font-size: 12.5px; }
+  .hero-stat span, .hero-kicker, .ident p, .foot, .mini-line .tag { font-size: 12px; }
+  .hero-stat b { font-size: 22px; }
+  .hero { padding: 16px; }
+  .hero-dice { display: none; }                   /* 装饰骰子在手机上纯占首屏 */
+  .ambient { display: none; }                     /* 手机上别为氛围动画费电 */
+  .dock { right: 10px; left: 10px; bottom: auto; top: 60px; align-items: stretch; }
+  .dock .pill { justify-content: center; min-height: 44px; }
+  .dock .pill .x { min-width: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; }
+
+  /* 触控下限：拇指比鼠标难点得准，所有可点的东西一律 >=44px 高 */
+  button, .btn, .tabs button, select, input, textarea { min-height: 44px; }
+  .btn.sm { min-height: 44px; padding: 0 14px; font-size: 13px; }
+  .playbar .btn, .modal .btn, .box .btn, .seat-card .btn, .turf-acts .btn, .hero .btn, .gate .btn { min-height: 44px; }
+  .chips button, .action .chips button { min-height: 46px; }
+
+  /* 字号下限：这些说明性文字原来是 10~11.5px，手机上看清了也费眼。
+     全部提到 12px；审计（tests/ui-round-cycle.js 窄屏）会断言「可见文字 >= 12px」 */
+  .brand-txt em, .chip, .chip span, .playbar .chip, .playbar .chip span, .playbar .pb-l, .playbar .pb-r,
+  .status-pill, .cup-cap, .cup-cap span, .cup-cap em, .counts, .counts span,
+  .score-block, .score-side, .score-side span, .last-cap, .last-cap span,
+  .round-chip, .round-chip div, .bid-cap, .bid-sub, .bid-strip, .seq-cap, .seq-row, .think-cap, .think-body,
+  .mini-line, .mini-line span, .mini-line b, .mini-line .tag,
+  .action .lab, .action .preview, .action .zhai-hint, .foot, .ident p, .hero-kicker, .hero-stat span,
+  .seat-meta, .turf-meta, .kv, .list .row, .list .sub, .list.small .row, .dock .pill span, .hero-sub,
+  .hint, .msg, .form label, .modal .hint {
+    font-size: 12px;
+  }
+  .bid-value { font-size: 19px; }
+  /* 这几处用的是简写 font:，必须用同名选择器在后面覆盖才压得住 */
+  .brand-txt b em, .hint.in, .bid-value em, .bid-strip > div, .duel-slot .sub, .duel-slot .empty { font-size: 12px; }
+  .brand-txt b { font-size: 17px; }
+  .die { width: 40px; height: 40px; }       /* 5 颗一排 + 间距在 390px 里放得下，点数也看得清 */
+}
+
+/* 尊重系统的「减少动态效果」：闪烁/呼吸动画全部停掉 */
+@media (prefers-reduced-motion: reduce) {
+  .dot.live, .pulse, .ambient i { animation: none !important; }
+  .btn, .fighter, .pill { transition: none !important; }
+}

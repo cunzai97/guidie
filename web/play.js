@@ -143,7 +143,11 @@ function setTheme(t) {
   if ($('btnTheme')) $('btnTheme').textContent = th === 'light' ? '日练' : '夜战';
 }
 function wireTheme() {
-  setTheme(localStorage.getItem('theme') || 'light');
+  // 默认跟系统（head 里已经预热过一次，这里只是把按钮文案对齐）
+  let t = null;
+  try { t = localStorage.getItem('theme'); } catch (e) { }
+  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  setTheme(t);
   if ($('btnTheme')) $('btnTheme').onclick = () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
 }
 
@@ -364,7 +368,10 @@ function renderDock() {
   const el = $('roomDock'); if (!el) return;
   const list = myRooms();
   const onRoomPage = !$('pageRoom').hidden;
-  el.hidden = list.length === 0 || onRoomPage;
+  // 手机上牌桌页不放浮窗：底部被吸底出价区占了，顶部那一条又正好盖住「还剩 Xs / 回房间」。
+  // 要换桌就点顶栏的「回房间」，回到演武场后浮窗照常出现。
+  const onPlayCompact = !$('pagePlay').hidden && isCompact();
+  el.hidden = list.length === 0 || onRoomPage || onPlayCompact;
   el.innerHTML = list.map(r => `<div class="pill" data-open="${esc(r.code)}">
       <span class="dot"></span><b>${esc(r.code)}</b><span>${esc(r.label || '')}</span>
       <span class="x" data-close="${esc(r.code)}" title="离桌">×</span></div>`).join('');
@@ -869,6 +876,12 @@ function bidByOf(d) { return d.bidBy || (d.bid && d.bid.by) || d.seat; }
 function openByOf(d) { return d.openedBy || d.who || d.seat; }
 // 复式换座后同一座位在不同把里可能是不同的人，所以优先用本把的名字表 S.gameAt
 function nm(p, d) { return esc((S.gameAt && S.gameAt[p]) || seatName(p) || (p === 'A' ? '甲方' : '乙方')); }
+/* 手机/窄屏是单列竖排：谁在下手机器人那一栏之外，还得让「我这一栏」排第一，
+ * 不然轮到我时出价区在屏幕外。观战没有座位，保持 甲方 → 牌桌 → 乙方 的原顺序。 */
+function markArenaOrder() {
+  const el = $('arena'); if (!el) return;
+  el.classList.toggle('me-b', S.plan === 'B');
+}
 function settleRound(d) {
   const div = document.createElement('div');
   div.className = 'row rset';
@@ -941,12 +954,25 @@ function showMatchOver(d) {
 }
 
 /* ---------------- 行动面板 ---------------- */
-// 人亲自出马：把出招按钮搬进自己那一栏（替换掉「实时推演」）；AI 那一栏显示推演流。
+// 窄屏（手机）判定：CSS 断点与这里必须同一个数，不然 JS 搬了 DOM 而样式没跟上
+const MQ_COMPACT = '(max-width: 820px)';
+function isCompact() { try { return matchMedia(MQ_COMPACT).matches; } catch (e) { return false; } }
+
+// 人亲自出马：桌面把出招按钮搬进自己那一栏（替换掉「实时推演」），AI 那一栏显示推演流。
+// 手机相反：出价区留在吸底的 .actionbar 里常驻可见 —— 搬进卡片就得往下滚一屏才能落子。
 function placeAction() {
   const act = $('action'); if (!act) return;
   const mySeat = (S.plan === 'A' || S.plan === 'B') ? S.plan : null;
+  const compact = isCompact();
+  markArenaOrder();          // 每次安置出价区时顺带标记单列顺序：换座、进房、转屏都能跟上
+  const bar = document.querySelector('.actionbar');
   for (const w of ['A', 'B']) {
     const slot = $('act' + w), think = $('thinkBox' + w);
+    if (w === mySeat && compact) {                 // 手机：我自己的卡片里不放按钮，也不留空的推演框
+      if (slot) slot.hidden = true;
+      if (think) think.hidden = true;
+      continue;
+    }
     if (w === mySeat) {
       if (slot) { slot.hidden = false; slot.appendChild(act); }
       if (think) think.hidden = true;
@@ -955,8 +981,16 @@ function placeAction() {
       if (think) think.hidden = false;
     }
   }
-  if (!mySeat) { const bar = document.querySelector('.actionbar'); if (bar && act.parentElement !== bar) bar.appendChild(act); }
+  if (!mySeat || compact) { if (bar && act.parentElement !== bar) bar.appendChild(act); }
 }
+// 转屏 / 分屏 / 桌面窗口缩到窄：跨过 820px 就重新安置出价区，不然按钮会留在错的容器里
+let lastCompact = isCompact();
+addEventListener('resize', () => {
+  const c = isCompact();
+  if (c === lastCompact) return;
+  lastCompact = c;
+  try { placeAction(); if (S.view) renderView(); } catch (e) { }
+});
 function renderAction(v) {
   const box = $('action');
   const bids = (v.legal || []).filter(a => a.type === 'bid');
@@ -980,6 +1014,31 @@ function renderAction(v) {
   const nowZhai = !!v.zhai;
   const modesNow = modesFor(S.sel.count, S.sel.face);
   const prev = v.bid;
+  /* 手机上没有 hover，光靠 title 等于什么都不说：按不动的档位要把「为什么」写在脸上。
+     桌面也一样受益 —— 之前潘潘就是撞在「斋和劈按不了但看不出为啥」上。 */
+  const whyMode = m => {
+    if (modesNow.includes(m)) return '';
+    if (m === 'toZhai') {
+      if (isClassic) return '经典规则：喊 1 就是斋，不用转。';
+      if (!prev) return '还没人喊价，转不了斋。';
+      if (nowZhai) return '已在斋里，要出斋用「破斋」。';
+      const need = Math.ceil(prev.count / 2);
+      const minC = (v.rules && v.rules.minCount) || 2;
+      if (need < minC) return '取半后只有 ' + need + ' 个，低于下限 ' + minC + '。';
+      return '转斋要选「' + need + ' 个」这一档。';
+    }
+    if (m === 'breakZhai') {
+      if (!nowZhai) return '没在斋里，不用破斋。';
+      return '破斋要喊到 ' + ((prev ? prev.count : 0) * 2 + 1) + ' 个以上。';
+    }
+    return '';
+  };
+  // 两个档位都按不动时，直接给一句人话（他撞的就是这个：首喊 + 未斋，转斋破斋都灰着却没解释）
+  // 注意必须在 whyMode 之后算：const 有 TDZ，提前引用会让整个 renderAction 抛错、出价按钮全消失
+  const whyNow = (!modesNow.includes('toZhai') && !modesNow.includes('breakZhai'))
+    ? (!prev ? '首喊不能转斋也不能破斋，先普通抬价。'
+             : (nowZhai ? whyMode('breakZhai') : whyMode('toZhai')))
+    : '';
   const prevTxt = prev ? `${prev.count} 个 ${prev.face}${prev.zhai ? ' 斋' : ''}` : '还没人喊价';
 
   // 斋/未斋 做成一个明确的三段开关：能不能点、为什么不能点，都写在按钮上
@@ -1004,11 +1063,11 @@ function renderAction(v) {
       }).join('')}</div></div>
       <div class="grp zhai-grp"><div class="lab">斋 / 未斋</div>
         <div class="chips modes-chips">
-          ${zc('normal', '普通抬价', '当前个数下不能按未斋抬价')}
+          ${zc('normal', '普通抬价', whyMode('normal') || '当前个数下不能按未斋抬价')}
           ${zc('toZhai', '转斋', isClassic ? '经典规则里喊点数 1 就是斋' : '转斋要把个数降到一半（' + (prev ? Math.ceil(prev.count / 2) : '—') + ' 个）')}
           ${zc('breakZhai', '破斋', '破斋要 2n+1 个（当前 ' + (prev ? prev.count : '—') + ' 个 → ' + (prev ? prev.count * 2 + 1 : '—') + ' 个）')}
-        </div>
-        <div class="zhai-hint">${zhaiHint}</div></div>
+        </div>${whyNow ? `<div class="why">${esc(whyNow)}</div>` : ''}
+        ${whyNow ? '' : `<div class="zhai-hint">${zhaiHint}</div>`}</div>
       <div class="preview">落子预览：<b id="pv"></b></div>` : '<div class="hint">已无价可喊，只能开盅。</div>'}
     <div class="grp"><div class="chips">
       <button class="big primary" id="btnGo">走这一步</button>
@@ -1017,7 +1076,8 @@ function renderAction(v) {
     </div></div>`;
   const upd = () => { const a = { type: 'bid', count: S.sel.count, face: S.sel.face, mode: S.sel.mode }; const pv = $('pv'); if (pv) pv.textContent = actText(a); };
   box.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { S.sel.count = +b.dataset.c; if (!modesFor(S.sel.count, S.sel.face).length) { const alt = bids.find(a => a.count === S.sel.count); if (alt) S.sel.face = alt.face; S.sel.mode = (alt && alt.mode) || 'normal'; } renderAction(v); });
-  box.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { if (b.classList.contains('no')) return; S.sel.face = +b.dataset.f; const ms = modesFor(S.sel.count, S.sel.face); if (!ms.includes(S.sel.mode)) S.sel.mode = ms[0] || 'normal'; renderAction(v); });
+  box.querySelectorAll('[data-f]').forEach(b => b.onclick = () => {
+    if (b.classList.contains('no')) { msg('#actMsg', b.title || '这个点数在当前个数下没有合法走法', 'bad'); return; } S.sel.face = +b.dataset.f; const ms = modesFor(S.sel.count, S.sel.face); if (!ms.includes(S.sel.mode)) S.sel.mode = ms[0] || 'normal'; renderAction(v); });
   box.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
     if (b.classList.contains('no')) {           // 点不动的档位要说话，不能干看着没反应
       msg('#actMsg', b.title || '这一手走不了', 'bad');

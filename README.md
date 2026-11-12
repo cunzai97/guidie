@@ -466,7 +466,7 @@ node tests/test-live-settle.js   # 零 token：开盅的「谁喊 / 谁开」、
 BASE=http://127.0.0.1:8898 node tests/smoke-live-http.js           # 真起服务走一遍 HTTP + SSE
 SMOKE_LLM=1 PRESET=<预设id> BASE=... node tests/smoke-live-http.js # 额外验一桌真模型（会花钱）
 node tests/ui-check.js           # 无头 Chrome 真点一遍：开桌 → 开局 → 喊价 → 对手应答 → 开盅结算
-node tests/ui-round-cycle.js     # 无头 Chrome：提交回调 vs 下一手 ask 的竞态不变式（WIN=390,844 跑手机）
+node tests/ui-round-cycle.js     # 无头 Chrome：竞态不变式 + 手机布局四条（WIN=390,844 手机档 / 1400,1100 桌面档）
 ```
 
 `ui-check.js` 用无头 Chrome + CDP（默认 `/usr/bin/google-chrome`，`BROWSER=` 可换），

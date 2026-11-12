@@ -123,13 +123,51 @@ BASE=http://127.0.0.1:8898 bash scripts/check-live.sh       # 对着你正在跑
 | 2 内置人机 | 免费陪练必须合法且真会读牌 | `test-bots-legal / test-oracle / test-reader / test-deep` |
 | 3 服务端 | 座位与隐私、复式换座、与实验室逐手一致；**开盅的「谁喊 / 谁开」「够→开的人输」、结算后必再问到人** | `test-live-pvp.js`、`test-live-settle.js` |
 | 4 传输通道 | 浏览器 SSE 与小程序长轮询共用同一份事件流、可见性过滤、断线补帧 | `smoke-live-http / test-mini-poll / test-mini-transport / smoke-mini-channel / test-miniprogram*` |
-| 5 真浏览器 | 无头 Chrome 真点：新席位全流程；**提交开盅的 POST 回调不得抹掉服务端已推来的下一手按钮**（把响应延迟 250ms 做成必然时序），桌面与手机两视口 | `ui-check.js`、`ui-round-cycle.js` |
+| 5 真浏览器 | 无头 Chrome 真点：新席位全流程；**提交开盅的 POST 回调不得抹掉服务端已推来的下一手按钮**（把响应延迟 250ms 做成必然时序）；手机视口另验布局四条（见下）| `ui-check.js`、`ui-round-cycle.js` |
 | 6 上下文与排名 | 回声不入历史、复盘接线、指纹与 Elo 口径 | `test-echo-prune / test-reflect / test-ranking / smoke-chat / smoke-memory` |
 
 其中 `test-live-settle.js` 与 `ui-round-cycle.js` 是为这轮修掉的三个 bug 专门补的：
 开盅记录把「喊价的人」印成「开盅的人」、「够：喊的人输」把判负方向写反、
 以及开盅之后出价按钮消失（只能干等到超时被自动接手）。两条在未修的代码上都能稳定跑失败，
 所以改 `web/play.js` 的开盅渲染或提交回调后，第 5 组两个视口必须重跑。
+
+### 手机模式（≤820px）
+
+不是第二个前端：同一份 `web/play.html` + `play.js`，靠 CSS 断点和一处 DOM 安置分支换布局。
+拆两份前端会把「同一口径」的测试拆成两份，不值得。断点数 `820` 在 `play.css` 的媒体查询和
+`play.js` 的 `MQ_COMPACT` 里各写一次，**改必须同时改**，否则 JS 搬了 DOM 而样式没跟上。
+
+四条硬规则，都在 `web/play.css` 末尾那段「手机模式」里：
+
+1. **出价区吸底**。桌面上 `placeAction()` 把出价按钮搬进我方卡片；手机上反过来，把它留在
+   `.actionbar` 里 `position:sticky; bottom:0`，并封顶 `max-height:46vh`（实测 390×844 下
+   出价区 335px，占四成屏，再多就在层内滚，不能把牌桌整张顶掉）。
+2. **单列顺序 我方 → 牌桌 → 对手**。窄屏下 `.table-center` 不再 `order:-1`；我坐乙方时由
+   `.arena.me-b` 换算，观战保持原序。
+3. **拇指与眼睛的下限**：可点元素 ≥44px 高、可见文字 ≥12px。原来一批说明文字是 10~11.5px，
+   出价芯片 31px 高，手机上按不准也看不清。
+4. **顶栏必须能换行**：`.top` 与嵌套的 `.topright` 都要 `flex-wrap:wrap`。只给外层换行不够 ——
+   状态牌里一塞房号和长昵称，内层不换行就把「账号」整个挤出屏幕（实测内容 465px > 390px）。
+
+按不动的档位要把原因写在按钮旁边（`.why`），不能只靠 `title`：微信内置浏览器没有 hover。
+首喊 + 未斋时那三个档位全是灰的，之前就是撞在这上面。
+
+验证与防漂：
+
+```bash
+WIN=390,844 node tests/ui-round-cycle.js    # [D] 段：溢出/裁切、字号、触控、吸底、换序
+WIN=1400,1100 node tests/ui-round-cycle.js  # 桌面档：出价区仍在我方卡片里
+BREAK="document.querySelector('.topright').style.flexWrap='nowrap'" WIN=390,844 node tests/ui-round-cycle.js
+```
+
+两个坑值得记着：
+
+- 视口必须用 `Emulation.setDeviceMetricsOverride` 显式设。只传 `--window-size` 时 headless 里
+  页面 `innerWidth` 其实只有 500，「桌面档」会一直在偷偷测手机档。所以测试里先断言
+  「实测 innerWidth == 设定宽度」。
+- 溢出判定要用 `documentElement.clientWidth`，别用 `innerWidth`：内容超宽时移动端布局视口会
+  跟着胀，`innerWidth` 反而看不出问题。顶栏被裁掉就是这么漏掉的。
+- `BREAK='<js>'` 用来故意打破一条适配规则，确认探针真的会报警 —— 探针不报警就是空跑。
 
 停：`Ctrl-C`，或找到进程 `ss -ltnp 'sport = :8898'` 看 PID 再 `kill`。
 数据都在 `DICE_DATA_DIR`（默认 `data/`，已 gitignore）；删掉就等于清空账号和战绩。

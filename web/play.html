@@ -1,10 +1,24 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2226%22 font-size=%2226%22>🎲</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 手机浏览器的状态栏/工具条跟着主题走，不然深色页面顶着一白条 -->
+<meta name="theme-color" content="#070a11" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f1e7" media="(prefers-color-scheme: light)">
 <title>鬼骰 · 实时对战</title>
+<script>
+/* 主题要在样式生效前定下来：不然深色用户每次进来先闪一屏浅色。
+   没有手动选过就跟系统走，选过就以选的为准。 */
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+  } catch (e) { }
+})();
+</script>
 <link rel="stylesheet" href="play.css?v=1">
 </head>
 <body>
@@ -157,7 +171,7 @@
       </div>
     </div>
 
-    <section class="arena">
+    <section class="arena" id="arena">
       <article class="fighter seat-a" id="fighterA">
         <div class="fighter-glow"></div>
         <div class="fighter-head">

@@ -37,7 +37,7 @@ async function runMatch(players, rng, opts = {}) {
   const hpMax = opts.hpMax || opts.roundTarget || 10;
   const maxRounds = opts.maxRounds || 30;        // 单局轮数封顶，到顶按剩余血量判胜
   const firstBidder = opts.firstBidder || 'A';
-  const m = E.newMatch({ hpMax, firstBidder, rules: opts.rules || 'classic' });
+  const m = E.newMatch({ hpMax, firstBidder, rules: opts.rules || 'flex' });
   // 每局清空 LLM 玩家的持久对话，避免跨局串味（bot 无 reset 则跳过）
   if (players.A.reset) players.A.reset();
   if (players.B.reset) players.B.reset();

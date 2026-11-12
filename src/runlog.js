@@ -40,7 +40,7 @@ function promptHash(variant, rules) {
   const C = require('./context.js');
   return sha1Text(C.promptTexts(rules, variant).join('\n\0\n'));
 }
-function rulesHash(rules) { return require('./dice-rulesets.js').hash(rules || 'classic'); }
+function rulesHash(rules) { return require('./dice-rulesets.js').hash(rules || 'flex'); }
 
 function startRecord(runId, config) {
   return {

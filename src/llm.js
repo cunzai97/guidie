@@ -48,7 +48,7 @@ function unfinished(out, parsed) {
 }
 
 function retryMessage(out, echo, ask, rules) {
-  const R = require('./dice-rulesets.js').normalize(rules || 'classic');
+  const R = require('./dice-rulesets.js').normalize(rules || 'flex');
   const flex = R.zhaiMode === 'half' || R.slash;
   const act = '「喊 X 个 Y」或「开盅」'
     + (flex ? '（转斋写「喊 X 个 Y 斋」、破斋写「喊 X 个 Y 破斋」、劈写「劈」）' : '');
@@ -66,7 +66,7 @@ function makeLLMPlayer(cfg, log = () => {}) {
     name, baseUrl, model, apiKey = null,
     thinking = false, effort = (cfg.thinking ? 'high' : 'off'), maxTokens = 8192, temperature = 0.7,
     timeoutMs = 300000, connRetries = 4, maxAsks = 3,
-    context = 'chat', prompt = null, guideText = null, rules = 'classic',
+    context = 'chat', prompt = null, guideText = null, rules = 'flex',
     reflectTokens = 2048, reflectEffort = 'off',     // 连败深度反思的写作预算（独立于 maxTokens；不叠思考，避免预算全烧在思维链里）
     summaryTokens = 8192,                            // 轮末复盘的输出预算（复盘是跨轮资产，不要按小预算给）
     ctxLimit = 32768,                                // 上下文窗口（token）：消息流到 80% 触发复盘压缩

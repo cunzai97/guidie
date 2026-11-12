@@ -276,6 +276,11 @@ async function initHome() {
   $('jNick').value = $('hNick').value;
   const rules = (S.ping && S.ping.rules) || [];
   $('hRules').innerHTML = rules.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
+  // 服务端规则列表第一项是 classic：不显式指定就会默认开经典桌。新桌默认鬼骰新规 flex，
+  // 已登录且存过偏好的仍用自己存的那套（不回改）。
+  const prefRules = (S.me && S.me.prefs && S.me.prefs.rules) || 'flex';
+  if (rules.some(r => r.id === prefRules)) $('hRules').value = prefRules;
+  else if (rules.some(r => r.id === 'flex')) $('hRules').value = 'flex';
   if (S.me && S.me.prefs) {
     if (S.me.prefs.hpMax) $('hHp').value = S.me.prefs.hpMax;
     if (S.me.prefs.turnMs) $('hTurn').value = Math.round(S.me.prefs.turnMs / 1000);
@@ -1171,29 +1176,34 @@ function renderAction(v) {
   const modesFor = (c, f) => [...new Set(bids.filter(a => a.count === c && a.face === f).map(a => a.mode || 'normal'))];
   const modeLabel = { normal: '普通抬价', toZhai: '转斋', breakZhai: '破斋' };
   const isClassic = (S.room && S.room.rulesId) === 'classic';
-  // 斋的规则说明：经典是「喊 1 就是斋」，新规是「个数取半转斋 / 2n+1 破斋」
+  // 斋的规则说明：经典是「喊 1 就是斋」，新规是「取半+1 档起的任意个数转斋 / 2 倍破斋」
   const zhaiHint = isClassic
     ? '经典规则：喊点数 1 就是斋（斋里 1 不再是万能）。'
-    : '新规：个数减半可以转斋，破斋要 2n+1 个；斋里 1 不再是万能。';
+    : '新规：个数达到「取半向上取整再加 0.5 后取整」那一档起，一直到 10 个都能转斋（要写明「斋」）；破斋要当前个数的 2 倍；斋里 1 不再是万能。';
   const nowZhai = !!v.zhai;
   const modesNow = modesFor(S.sel.count, S.sel.face);
   const prev = v.bid;
+  /* 门槛一律从服务端的权威动作集合倒推，不在前端另算一遍规则：
+     自定义套改了除数/倍数也不会说错，规则仍然是单一真源。 */
+  const lowOf = mode => {
+    const c = bids.filter(a => a.mode === mode).map(a => a.count);
+    return c.length ? Math.min(...c) : null;
+  };
+  const zcMin = lowOf('toZhai'), bcMin = lowOf('breakZhai');
   /* 手机上没有 hover，光靠 title 等于什么都不说：按不动的档位要把「为什么」写在脸上。
      桌面也一样受益 —— 之前潘潘就是撞在「斋和劈按不了但看不出为啥」上。 */
   const whyMode = m => {
     if (modesNow.includes(m)) return '';
     if (m === 'toZhai') {
       if (isClassic) return '经典规则：喊 1 就是斋，不用转。';
-      if (!prev) return '还没人喊价，转不了斋。';
       if (nowZhai) return '已在斋里，要出斋用「破斋」。';
-      const need = Math.ceil(prev.count / 2);
-      const minC = (v.rules && v.rules.minCount) || 2;
-      if (need < minC) return '取半后只有 ' + need + ' 个，低于下限 ' + minC + '。';
-      return '转斋要选「' + need + ' 个」这一档。';
+      if (zcMin == null) return prev ? '这一手没有可转斋的个数档位。' : '首喊想直接进斋：选一档个数并写明「斋」。';
+      return '转斋要选 ' + zcMin + '~10 个中的任意一档，并写明「斋」（只有最低的 ' + zcMin + ' 个可不写）。';
     }
     if (m === 'breakZhai') {
       if (!nowZhai) return '没在斋里，不用破斋。';
-      return '破斋要喊到 ' + ((prev ? prev.count : 0) * 2 + 1) + ' 个以上。';
+      if (bcMin == null) return '翻倍后超过 10 颗，这一手破不了斋。';
+      return '破斋要喊到至少 ' + bcMin + ' 个（当前个数的 2 倍），并写明「破斋」。';
     }
     return '';
   };
@@ -1302,7 +1312,11 @@ function renderMe() {
   $('cfgList').querySelectorAll('[data-drop]').forEach(b => b.onclick = async () => {
     try { await api('/api/profile/drop', { id: b.dataset.drop }); S.me = (await api('/api/me')).me; renderMe(); } catch (e) { }
   });
-  $('pRules').innerHTML = ((S.ping && S.ping.rules) || []).map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
+  const pRulesList = (S.ping && S.ping.rules) || [];
+  $('pRules').innerHTML = pRulesList.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
+  const prefR = (me.prefs && me.prefs.rules) || 'flex';
+  if (pRulesList.some(r => r.id === prefR)) $('pRules').value = prefR;
+  else if (pRulesList.some(r => r.id === 'flex')) $('pRules').value = 'flex';
   if (me.prefs) { $('pHp').value = me.prefs.hpMax || 8; $('pTurn').value = Math.round((me.prefs.turnMs || 45000) / 1000); $('pDup').checked = !!me.prefs.duplicate; }
   $('cGuideN').textContent = ($('cGuide').value || '').length;
 }

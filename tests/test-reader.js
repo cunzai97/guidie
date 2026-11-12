@@ -38,13 +38,20 @@ console.log('[1] 后验方向：对手喊 3个6斋 → 后验移向有 6 的手�
   ok(postGe3 > 0.3, `后验 P(对手≥3个6)=${postGe3.toFixed(3)} 远高于先验 0.035`);
 }
 
-console.log('[2] 剥削点修复：手持 0 个 6 面对 3个6斋，v2 必劈、reader 不劈');
+console.log('[2] 剥削点修复：v2 必劈、reader 会读牌不盲劈');
 {
-  const m = mkRound('flex', [1, 2, 3, 4, 5], [{ who: 'B', count: 3, face: 6, mode: 'toZhai' }]);
+  // 2026-11-12 新规后，「A 手里 0 个 6 面对 3个6斋」时破斋门槛 7→6、转斋又从单档
+  // 放开成 [zc,10] 范围，继续抬价的 EV 变差，reader 与 oracle 都会劈 —— 这是规则后果，
+  // 不是读牌失效。换到 A 手里有 1 个 6 的局面，仍能把「reader 不盲劈」这条契约测出来。
+  const m = mkRound('flex', [1, 2, 3, 4, 6], [{ who: 'B', count: 3, face: 6, mode: 'toZhai' }]);
   const o = B.oracleBot().decide(m, 'A');
   const rd = B.readerBot().decide(m, 'A');
   ok(o.type === 'open' && o.slash === true, `v2 oracle 劈（被剥削行为复现）: ${JSON.stringify(o)}`);
   ok(!(rd.type === 'open' && rd.slash), `reader 不劈: ${JSON.stringify(rd)}`);
+  // 顺手把新规下的行为变化钉住，免得以后有人把它误读成回归
+  const m0 = mkRound('flex', [1, 2, 3, 4, 5], [{ who: 'B', count: 3, face: 6, mode: 'toZhai' }]);
+  const rd0 = B.readerBot().decide(m0, 'A');
+  ok(rd0.type === 'open' && rd0.slash === true, '新规下 0 个 6 时抬价 EV 变差，reader 也选择劈（规则后果，非回归）');
 }
 
 console.log('[3] 反向：对手喊明显超载的假价，reader 敢开/劈');

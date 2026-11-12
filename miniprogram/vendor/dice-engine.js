@@ -1,7 +1,8 @@
 /* 大话骰规则引擎（无 UI、无网络），浏览器与 Node 都能用
  * 规则不再写死：newMatch({rules}) 注入一份规则集（dice-rulesets.js），
  * legalActions / normalizeAction / countFace / resolveOpen 全按这份配置工作。
- * 不传 rules 时等价于经典套，旧代码与历史 run 逐字不变。
+ * newMatch 不传 rules 时默认鬼骰新规 flex；显式传 'classic' 仍走经典套。
+ * （手工构造、不带 rules 字段的 round 由 rulesOf 回落到经典口径，兼容旧调用。）
  * 2026-11-10 起计分改为血量制：开局各 hpMax 点血，输家掉血、归零者输掉整局（见 settle）。
  */
 (function (root, factory) {
@@ -55,7 +56,9 @@
       hpMax,                                      // 血量上限=开局血量
       hp: { A: hpMax, B: hpMax },                 // 当前血量：开盅输家 −stake（劈/零和套赢家也 +stake，回满为止）
       losses: { A: 0, B: 0 },                      // 兼容字段：各人输掉的轮数（观赏页进度用，非判负依据）
-      rules: RS.normalize(cfg.rules || 'classic'),
+      // 2026-11-12：新建对局默认鬼骰新规 flex；显式传 'classic' 仍是经典套。
+      // 已经存在的房间把整个规则对象存进 room.rules，走 rooms.js 那条路，不受这里影响。
+      rules: RS.normalize(cfg.rules || 'flex'),
       roundNo: 0, history: [], round: null,
       firstBidder: cfg.firstBidder || 'A', lastLoser: null, over: false, winner: null,
     };
@@ -96,17 +99,23 @@
   function zhaiCount(round) {
     const b = round.bid;
     if (!b) return null;
-    return Math.ceil(b.count / rulesOf(round).halfDivisor);
+    const R = rulesOf(round);
+    // 2026-11-12 新规（只作用于 half 套）：ceil(n / divisor + 0.5)。
+    // divisor=2 时等价于 floor(n/2)+1：n=4→3、n=5→3、n=6→4、n=3→2。
+    // face1 套保持旧公式，经典链路逐字不变。
+    return R.zhaiMode === 'half'
+      ? Math.ceil(b.count / R.halfDivisor + 0.5)
+      : Math.ceil(b.count / R.halfDivisor);
   }
-  // 破斋门槛：当前个数的 breakMultiplier 倍再加 breakPlus（新规是「两倍 + 1」）。
-  // 2n+1 天生大于转斋前的个数（ceil(n/2)*2+1 > n），所以不再需要「必须超过斋前那一手」这条，
+  // 破斋门槛：当前个数的 breakMultiplier 倍再加 breakPlus（新规 FLEX 是 breakPlus=0 → 2n）。
+  // 2n 天生大于转斋前的个数，所以不再需要「必须超过斋前那一手」这条，
   // 也就不需要在轮内记 preZhai——一条规则同时挡住压价循环。
   function breakMinCount(round) {
     const b = round.bid, R = rulesOf(round), k = R.breakMultiplier;
     if (!b || !k) return null;
     return b.count * k + (R.breakPlus || 0);
   }
-  // 破斋的唯一条件：个数 ≥ 当前个数 × k + plus（新规 = 2n+1），点数任选。
+  // 破斋的唯一条件：个数 ≥ 当前个数 × k + plus（新规 = 2n），点数任选。
   // 写不写「破斋」决定它「算不算」破斋（不写就只是斋里的普通抬价）。
   function canBreak(round, count, face) {
     const R = rulesOf(round);
@@ -143,9 +152,12 @@
     // 「不切换状态」，不能被个数悄悄改掉，否则权威集合里会凭空多出一个不存在的键。
     // 2026-11-10 起：转斋仍可按取半个数推断，破斋则必须显式写「破斋」——
     // 个数到了翻倍却没写标记，就是留在斋里的普通抬价（例如「2 个 4 斋」后喊「4 个 4」仍是斋）。
+    // 2026-11-12：转斋改成「最低那一档起的任意个数」后，个数不再唯一，
+    // 因此只有恰好等于最低档才自动判转斋；其余个数必须显式写「斋」，
+    // 免得把普通抬价误判成转斋。也不再受首喊下限 3 的约束（n=3 时最低档是 2）。
     if (R.autoInfer && R.zhaiMode === 'half' && round.bid && o.mode == null) {
       const zc = zhaiCount(round);
-      if (!round.zhai && zc != null && zc >= R.minCount && o.count === zc) return Object.assign(o, { mode: 'toZhai' });
+      if (!round.zhai && zc != null && o.count === zc) return Object.assign(o, { mode: 'toZhai' });
     }
     return Object.assign(o, { mode: 'normal' });
   }
@@ -218,9 +230,14 @@
         }
       }
     }
-    if (!round.zhai && zc != null && zc >= R.minCount) {
+    // 2026-11-12：转斋是范围，不是只有取半那一档 —— 个数落在 [zc, 10] 都可以转斋，
+    // 点数按 faceFree；同时去掉 zc >= R.minCount 这道门（n=3 时 zc=2 也允许转斋，
+    // 首喊的 ≥3 不该管到转斋/破斋/斋内抬价）。
+    if (!round.zhai && zc != null) {
       const zf = R.faceFree ? FACES : [1];
-      for (const f of zf) add({ type: 'bid', count: zc, face: f, mode: 'toZhai' });
+      for (let c = Math.max(1, zc); c <= R.maxCount; c++) {
+        for (const f of zf) add({ type: 'bid', count: c, face: f, mode: 'toZhai' });
+      }
     }
     add({ type: 'open', slash: false });
     if (R.slash) add({ type: 'open', slash: true });

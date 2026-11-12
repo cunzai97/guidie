@@ -10,6 +10,9 @@
  * 用法：node tests/smoke-mini-channel.js
  */
 'use strict';
+
+// 本机沙箱 RLIMIT_AS=4GiB 时 undici fetch 会 wasm OOM；测试只用 JSON 请求，走 node:http 替身
+require('./lib-fetch-http.js').install();
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');

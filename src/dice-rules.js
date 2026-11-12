@@ -95,7 +95,17 @@
     // 斋里写「斋」是幂等标记（normalizeAction 已折成普通抬价），但整手仍不合法时要说清原因。
     if (a && (a.mode === 'toZhai') && R.zhaiMode === 'half' && r.zhai && !legal.has(E.actionKey(norm)))
       return '本轮已经在斋里：转斋只能从「未斋」进入。按普通抬价（加个数，或个数不变换更大点数），或者写明「破斋」。';
-    if (!(count >= R.minCount && count <= R.maxCount)) return '个数至少 ' + R.minCount + ' 个、最多 ' + R.maxCount + ' 个（全场一共 10 颗骰子；本桌任何喊价都不许少于 ' + R.minCount + ' 个，转斋取半后不够 ' + R.minCount + ' 个也不许转）。';
+    // 2026-11-12 新规：half 套的 ≥3 只管「未斋的普通喊价与首喊」（含首喊直接喊斋）；
+    // 转斋、破斋、以及进斋之后的普通抬价都不受 3 限制（斋内下限就是上一手的个数）。
+    // 经典套保持原来那句逐字不变。
+    const needFloor = norm.mode === 'normal' ? !r.zhai : (norm.mode === 'toZhai' && !p);
+    const floor = needFloor ? R.minCount : (R.zhaiMode === 'half' ? 2 : R.minCount);
+    if (!(count >= floor && count <= R.maxCount)) {
+      if (R.zhaiMode !== 'half') return '个数至少 ' + R.minCount + ' 个、最多 ' + R.maxCount + ' 个（全场一共 10 颗骰子；本桌任何喊价都不许少于 ' + R.minCount + ' 个，转斋取半后不够 ' + R.minCount + ' 个也不许转）。';
+      return needFloor
+        ? '个数至少 ' + floor + ' 个、最多 ' + R.maxCount + ' 个（全场一共 10 颗骰子；本桌未斋的普通喊价与首喊都不许少于 ' + floor + ' 个）。'
+        : '个数要在 ' + floor + '~' + R.maxCount + ' 个之间（转斋、破斋、斋内抬价不受首喊下限 ' + R.minCount + ' 个的约束）。';
+    }
     if (!(face >= 1 && face <= 6)) return '点数只能是 1 到 6。';
     if (norm.mode === 'toZhai') {
       if (R.zhaiMode !== 'half') return '本桌不支持转斋：这里只有喊点数 1 才叫斋。';
@@ -105,8 +115,8 @@
       } else {
         // 已在斋里的「斋」标记已被 normalizeAction 折成普通抬价，这里只处理真正的转斋。
         const zc = E.zhaiCount(r);
-        if (count !== zc) return '转斋的个数必须取上一手 ' + p.count + ' 个的一半向上取整，也就是 ' + zc + ' 个。';
-        if (zc < R.minCount) return '取半后只有 ' + zc + ' 个，不足 ' + R.minCount + ' 个，这一手不能转斋（抬价或开盅）。';
+        if (count < zc) return '转斋的个数至少要上一手 ' + p.count + ' 个取半向上取整再加 0.5 后取整，也就是 ' + zc
+          + ' 个（' + zc + '~10 个任选，并写明「斋」）。';
         if (!R.faceFree && face !== 1) return '本桌转斋时点数只能喊 1。';
       }
     } else if (norm.mode === 'breakZhai') {
@@ -116,7 +126,7 @@
       if (min == null || min > R.maxCount) return '翻倍后会超过 10 颗，这一手破不了斋。';
       if (face === 1) return '破斋不能喊点数 1：喊 1 立刻又是斋，破斋这一手只能喊 2~6。';
       if (count < min) return '破斋的个数要到当前 ' + p.count + ' 个的 ' + R.breakMultiplier + ' 倍'
-        + (R.breakPlus ? '再加 ' + R.breakPlus : '') + '，也就是 ' + min + ' 个以上。';
+        + (R.breakPlus ? '再加 ' + R.breakPlus : '') + '，也就是至少 ' + min + ' 个。';
     }
     if (!p) {
       if (count < R.firstMin) return '首喊个数至少 ' + R.firstMin + ' 个。';
@@ -130,7 +140,10 @@
     if (norm.mode === 'normal') {
       if (count < p.count) return '个数不能比上一手少（上一手是 ' + p.count + ' 个）；要多就加到 ' + (p.count + 1)
         + ' 个或更多（可以一次跳加）'
-        + (R.zhaiMode === 'half' && !r.zhai ? '；想转斋则喊 ' + E.zhaiCount(r) + ' 个并写上「斋」' : '') + '。';
+        + (R.zhaiMode === 'half' && !r.zhai
+            ? '；想转斋就喊 ' + E.zhaiCount(r) + '~10 个中的任意一档并写明「斋」'
+              + (R.autoInfer ? '（只喊最低的 ' + E.zhaiCount(r) + ' 个时可不写「斋」）' : '')
+            : '') + '。';
       if (count === p.count && R.zhaiMode === 'half' && r.zhai && R.lockFace)
         return '斋内不能换点数，只能继续加 ' + p.face + ' 的个数。';
       if (count === p.count) return '个数没变，点数就得换成比 ' + p.face + ' 更大的（顺序 2<3<4<5<6<1）。';

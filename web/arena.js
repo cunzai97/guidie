@@ -48,7 +48,7 @@ const DEFAULT_SETTINGS = {
   defaultEffort:'medium',  // 同上：新建模型 / 配置缺项时的缺省思考强度（off/low/medium/high）
   theme:'dark',            // dark=午夜牌桌 | light=白纸牌桌
   ctxBudget:24000,         // 局内全量上下文的字符软预算，超出时折叠最早的逐手判断
-  rules:'classic',         // 当前规则集 id（内置 classic / flex，或用户自定义套）
+  rules:'flex',            // 当前规则集 id（默认鬼骰新规；内置 classic 仍可显式选）
   ruleSets:[],             // 用户自定义规则套（内置两套不写入这里）
   seatEffort:{A:'auto',B:'auto'},  // 开局前的每席思考强度覆盖：auto=跟随模型预设
 };
@@ -94,7 +94,7 @@ function normalizeSettings(s){
   o.maxRounds = clamp(o.maxRounds, 3, 500, DEFAULT_SETTINGS.maxRounds);
   delete o.carry;   // 旧存档里的跨局继承开关已废弃，不再写回
   o.ruleSets = normalizeRuleSets(o.ruleSets);
-  o.rules = String(o.rules || 'classic');
+  o.rules = String(o.rules || 'flex');
   o.defaultEffort = normalizeEffort(o.defaultEffort || DEFAULT_SETTINGS.defaultEffort);
   const se = (s && s.seatEffort) || {};
   const effPick = v => (v === 'auto' ? 'auto' : (EFFORTS.indexOf(v) >= 0 ? v : 'auto'));
@@ -117,7 +117,7 @@ function normalizePreset(p, dfltMaxTokens, dfltEffort){
 // 设置里选中的规则集（下一局生效）与当前局面锁定的规则集：
 // 开战后一律用 state.G.rules，中途在设置里换规则不会让这一局的合法性口径漂移。
 function selectedRules(){
-  return RS.byId(state.settings.rules, state.settings.ruleSets) || RS.normalize('classic');
+  return RS.byId(state.settings.rules, state.settings.ruleSets) || RS.normalize('flex');
 }
 function activeRules(){
   return (state.G && state.G.rules) ? state.G.rules : selectedRules();
@@ -399,7 +399,7 @@ function ruleOptions(sel, keep){
     o.value = r.id; o.textContent = r.name + (r.builtin ? '' : ' · 自定义');
     sel.appendChild(o);
   }
-  sel.value = list.some(x => x.id === keep) ? keep : 'classic';
+  sel.value = list.some(x => x.id === keep) ? keep : 'flex';
 }
 function renderRuleList(){
   const box = $('ruleList'); if (!box) return;
@@ -472,12 +472,12 @@ function delRule(id){
   const r = state.settings.ruleSets.find(x => x.id === id); if (!r) return;
   if (doc.defaultView && !doc.defaultView.confirm('删除规则套「' + r.name + '」？')) return;
   state.settings.ruleSets = state.settings.ruleSets.filter(x => x.id !== id);
-  if (state.settings.rules === id) state.settings.rules = 'classic';
+  if (state.settings.rules === id) state.settings.rules = 'flex';
   closeRuleEditor(); renderRules(); saveStore();
   if ($('saveHint')) $('saveHint').textContent = '已删除：' + r.name;
 }
 function setActiveRules(id){
-  state.settings.rules = RS.byId(id, state.settings.ruleSets) ? id : 'classic';
+  state.settings.rules = RS.byId(id, state.settings.ruleSets) ? id : 'flex';
   renderRules(); saveStore();
   if ($('saveHint')) $('saveHint').textContent = state.started
     ? '规则已切换；当前这局仍用开战时锁定的一套，下一局生效'
@@ -1528,7 +1528,8 @@ function arenaRestoreState(sv){
     const p = state.players[w];
     if (p && p.kind === 'bot' && BOT) state.bots[w] = BOT.makeBot(p.bot, E.mulberry32(seedOf(state.runId + ':' + w + ':' + state.gameNo)));
   }
-  const rules = allRules().find(r => r.id === sv.G.rulesId) || RS.normalize(sv.G.rules || 'classic');
+  // 存档里带 rulesId / rules 就照原样恢复（历史 classic 局不回改）；都没有才按当前默认 flex。
+  const rules = allRules().find(r => r.id === sv.G.rulesId) || RS.normalize(sv.G.rules || 'flex');
   state.G = {
     hpMax: sv.G.hpMax, hp: Object.assign({}, sv.G.hp), losses: Object.assign({ A:0, B:0 }, sv.G.losses || {}),
     roundNo: sv.G.roundNo, over: !!sv.G.over, winner: sv.G.winner || null, capped: !!sv.G.capped,

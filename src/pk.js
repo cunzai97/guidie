@@ -50,8 +50,8 @@ function resolveRules(id) {
     const custom = ((j.settings || {}).ruleSets || []).find(x => x && x.id === id);
     if (custom) return RS.normalize(custom);
   } catch (e) { /* 没配置文件时只用内置 */ }
-  console.error(`未知规则集「${id}」，回落到 classic`);
-  return RS.normalize('classic');
+  console.error(`未知规则集「${id}」，回落到 flex（鬼骰新规）`);
+  return RS.normalize('flex');
 }
 
 // Qoder 网关的本机 Key：优先环境变量，其次 qoder-api 落盘的那份（只读，不外发）
@@ -121,7 +121,7 @@ async function main() {
     temperature: parseFloat(arg('temperature', '0.7')), seed,
     prompt: arg('prompt', null),   // 提示词臂；null=用注册表默认臂（当前只有一套）
     context: arg('context', 'chat'),   // chat=持久逐字对话(默认) | memory=追加式摘要链(轮末自总结压缩) | snapshot=窗口快照(对比臂)
-    rules: resolveRules(arg('rules', 'classic')),
+    rules: resolveRules(arg('rules', 'flex')),
     // 连败反思臂：局内连续输满 N 轮触发一次深度总结，反思文本取代兵书与此前所有总结。0=关闭
     ctxLimit: parseInt(arg('ctx-limit', '32768'), 10),   // 上下文窗口（token）；消息流到 80% 触发复盘压缩
     reflectAfter: parseInt(arg('reflect', '4'), 10),   // 0=关闭；默认连输 4 轮触发深度反思

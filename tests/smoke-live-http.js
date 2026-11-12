@@ -6,6 +6,9 @@
  * 只测协议与隐私口径，不测模型强弱。零 LLM 调用为默认路径。
  */
 'use strict';
+
+// 本机沙箱 RLIMIT_AS=4GiB 时 undici fetch 会 wasm OOM；测试只用 JSON 请求，走 node:http 替身
+require('./lib-fetch-http.js').install();
 const BASE = process.env.BASE || 'http://127.0.0.1:8898';
 let pass = 0, fail = 0;
 function ok(c, m, extra) { if (c) { pass++; console.log('  ✓', m); } else { fail++; console.log('  ✗', m, extra == null ? '' : JSON.stringify(extra).slice(0, 240)); } }

@@ -186,18 +186,22 @@ function legalMenu(round, rules) {
     : `  ① 开盅（质疑开盅前最近的一手，也就是当前这个最高价：对手刚喊的 ${b.count} 个 ${b.face}${seqTag(b, R)}）。开盅${openPay}`);
   const raises = [];
   const zc = E.zhaiCount(round), bcMin = E.breakMinCount(round);
-  if (!round.zhai && zc != null && zc >= R.minCount) raises.push(`转斋：喊 ${zc} 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写「斋」——个数取上一手的一半向上取整；这一手起 1 不再万能`);
-  else if (!round.zhai && zc != null && zc < R.minCount) raises.push(`本轮不能转斋：取半只有 ${zc} 个，不足 ${R.minCount} 个`);
+  // 2026-11-12 新规：转斋是范围 [ceil(n/d+0.5), 10]，不再只有最低那一档；
+  // 也不再受首喊下限 3 的约束（n=3 时最低档 2 个也能转斋）。
+  if (!round.zhai && zc != null) raises.push(`转斋：喊 ${zc}~10 个 ${R.faceFree ? '1~6 任选点数' : '1'}、写明「斋」——`
+    + `个数至少 ceil(n / ${R.halfDivisor} + 0.5)${R.halfDivisor === 2 ? '（floor(n / 2) + 1）' : ''}，从这一档起可以一路加到 10；`
+    + `这一手起 1 不再万能`
+    + (R.autoInfer ? `；漏写「斋」只在恰好喊 ${zc} 个这一最低档时才按转斋算，其它个数必须显式写「斋」` : ''));
   if (round.zhai && bcMin != null && bcMin <= R.maxCount) {
-    raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（${bcMin}~10 个都行），点数 2~6（喊 1 会立刻又进斋）；这一手起 1 恢复万能。`
-      + `例：喊 ${bcMin} 个 ${R.faceFree ? '任意点数' : '1'} 破斋——不写「破斋」就只是留在斋里的普通抬价`);
+    raises.push(`破斋：写明「破斋」、个数至少 ${bcMin} 个（${bcMin}~10 个都行，也就是当前个数的 ${R.breakMultiplier} 倍），点数 2~6（喊 1 会立刻又进斋）；这一手起 1 恢复万能。`
+      + `例：喊 ${bcMin} 个 3 破斋——不写「破斋」就只是留在斋里的普通抬价`);
   } else if (round.zhai && bcMin != null) {
     raises.push(`本轮破不了斋：个数要加到 ${bcMin} 个才够，超过全场 10 颗了`);
   }
   if (b.count < 10) raises.push('把个数加到 ' + (b.count + 1) + '~10 任选（可以一次跳加好几个），此时点数 1~6 任选'
     + (round.zhai ? '、仍留在斋状态' : '')
     + (round.zhai && bcMin != null && bcMin <= R.maxCount
-        ? '；个数到 ' + bcMin + ' 个以上时，想破斋就写明「破斋」，不写仍留在斋里（1 仍不万能）' : ''));
+        ? '；个数到 ' + bcMin + ' 个起，想破斋就写明「破斋」，不写仍留在斋里（1 仍不万能）' : ''));
   if (!round.zhai) raises.push('喊点数 1 即进斋（这一手起 1 不再万能），不用另写「斋」');
   if (!(round.zhai && R.lockFace)) {
     const higher = E.FACE_ORDER.filter(f => E.ord(f) > E.ord(b.face));

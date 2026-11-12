@@ -1,9 +1,9 @@
 {
-  "syncedAt": "2026-11-11T13:14:43.313Z",
+  "syncedAt": "2026-11-12T07:05:35.207Z",
   "files": {
-    "dice-rulesets.js": "48efdafb361736e6899cbf2d9482648c",
-    "dice-engine.js": "8415a0d3cc4f1c060b2259b889423232",
-    "dice-rules.js": "080d95c358be07da1f96ac489fd7974c",
+    "dice-rulesets.js": "7a8ea6ee1d7aa4a79b4fcbe93f53a4a7",
+    "dice-engine.js": "5440ddd24f54d0bec6b94505b01ff361",
+    "dice-rules.js": "d2329a070a89972ca3686ae742b65b56",
     "view.js": "9e5b47500e771b1d9245f9df17feb3b9"
   }
 }

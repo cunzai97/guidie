@@ -49,8 +49,11 @@ Page({
       const rules = (ping.rules || []).map(r => ({ id: r.id, name: r.name }));
       const bots = (ping.bots || []).map(b => ({ id: b.id, label: b.label, desc: b.desc }));
       const presets = (ping.models || []).map(m => ({ id: m.id, label: m.alias || m.model, host: m.host }));
+      // 服务端规则列表第一项是 classic，不显式定位就会默认开经典桌；新桌一律默认鬼骰新规 flex。
+      const flexIdx = rules.findIndex(r => r.id === 'flex');
       this.setData({
         pingOk: true, rules, ruleNames: rules.map(r => r.name), wxLogin: !!ping.wxLogin,
+        ruleIndex: flexIdx < 0 ? this.data.ruleIndex : flexIdx,
         bots, botNames: bots.map(b => b.label),
         presets, presetNames: presets.map(p => p.label + (p.host ? ' · ' + p.host : '')),
         msg: '', msgBad: false,

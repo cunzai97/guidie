@@ -266,11 +266,11 @@
             <label class="field"><span>斋的触发方式</span>
               <select id="rZhaiMode">
                 <option value="face1">经典 · 喊点数 1 即斋（锁点数）</option>
-                <option value="half">新规 · 取半向上取整转斋</option>
+                <option value="half">新规 · 取半+1 档起转斋（可加到 10）</option>
               </select></label>
             <label class="field"><span>取半除数 <i>仅新规</i></span><input id="rHalfDivisor" type="number" min="2" max="4" step="1" value="2"></label>
             <label class="field"><span>破斋倍数 <i>0 = 不可破斋</i></span><input id="rBreakMultiplier" type="number" min="0" max="4" step="1" value="2"></label>
-            <label class="field"><span>破斋再加 <i>新规 = 2 倍 + 1</i></span><input id="rBreakPlus" type="number" min="0" max="3" step="1" value="1"></label>
+            <label class="field"><span>破斋再加 <i>新规 = 正好 2 倍</i></span><input id="rBreakPlus" type="number" min="0" max="3" step="1" value="0"></label>
           </div>
           <div class="rule-checks">
             <label class="check"><input id="rFaceFree" type="checkbox"><span>转斋点数全自由 <i>不限制必须喊 1</i></span></label>
@@ -285,7 +285,7 @@
           <div class="field-row">
             <label class="field"><span>普通开盅扣血</span><input id="rStake" type="number" min="1" max="5" step="1" value="1"></label>
             <label class="field"><span>劈的 ±</span><input id="rSlashStake" type="number" min="1" max="5" step="1" value="2"></label>
-            <label class="field"><span>首喊个数下限</span><input id="rFirstMin" type="number" min="2" max="6" step="1" value="2"></label>
+            <label class="field"><span>首喊个数下限 <i>新规 = 3</i></span><input id="rFirstMin" type="number" min="2" max="6" step="1" value="3"></label>
             <label class="field"><span>首喊个数上限</span><input id="rFirstMax" type="number" min="2" max="10" step="1" value="6"></label>
           </div>
           <div class="form-actions">

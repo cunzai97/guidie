@@ -41,7 +41,7 @@ const PRESETS_FILE = path.join(ROOT, 'presets.json');
 // presets.json 里管理员配的预设能走服务器本机/内网的模型桥）。
 const PUBLIC = process.env.DICE_PUBLIC === '1';
 const MAX_BODY = 256 * 1024;
-const STATIC_OK = new Set(['/web/play.html', '/web/play.js', '/web/play.css']);
+const STATIC_OK = new Set(['/web/play.html', '/web/play.js', '/web/play.css', '/web/ranking.js']);
 // 服务器主人（例如潘潘自己）：只有这些账号能把模型端点指向服务器本机的隧道口，
 // 别人（游客、朋友）在公网部署上一律不许碰私网地址。
 const OWNER_UIDS = (process.env.DICE_OWNER_UIDS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -575,6 +575,7 @@ async function api(req, res, u) {
         .map(m => ({
           t: m.t, run_id: m.run_id, gameNo: m.gameNo, rules: m.rules, hpMax: m.hpMax, rounds: m.rounds,
           winner: m.winner, draw: m.draw, hp: m.hp, duplicate: m.duplicate,
+          ruleset_hash: m.ruleset_hash || null, prompt_hash: m.prompt_hash || null, source: m.source || 'live',
           seats: { A: publicSeat(m.seats.A), B: publicSeat(m.seats.B) }, stats: m.stats, ms: m.ms,
         }));
     } catch (e) { rows = []; }
@@ -656,13 +657,16 @@ function publicSeat(s) {
 let inlineCache = { key: '', buf: null };
 function inlinePage() {
   const f = n => path.join(ROOT, 'web', n);
-  const st = ['play.html', 'play.css', 'play.js'].map(n => { try { return fs.statSync(f(n)).mtimeMs; } catch (e) { return 0; } });
+  const st = ['play.html', 'play.css', 'play.js', 'ranking.js'].map(n => { try { return fs.statSync(f(n)).mtimeMs; } catch (e) { return 0; } });
   const key = st.join(':');
   if (inlineCache.buf && inlineCache.key === key) return inlineCache.buf;
   let html = fs.readFileSync(f('play.html'), 'utf8');
   const css = fs.readFileSync(f('play.css'), 'utf8');
   const js = fs.readFileSync(f('play.js'), 'utf8').replace(/<\/script>/gi, '<\\/script>');
+  let rank = '';
+  try { rank = fs.readFileSync(f('ranking.js'), 'utf8').replace(/<\/script>/gi, '<\\/script>'); } catch (e) { /* 排名模块可选 */ }
   html = html.replace(/<link[^>]*play\.css[^>]*>/, '<style>\n' + css + '\n</style>')
+    .replace(/<script src="ranking\.js[^"]*"><\/script>/, rank ? '<script>\n' + rank + '\n</script>' : '')
     .replace(/<script src="play\.js[^"]*"><\/script>/, '<script>\n' + js + '\n</script>');
   inlineCache = { key, buf: Buffer.from(html, 'utf8') };
   return inlineCache.buf;

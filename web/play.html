@@ -5,111 +5,117 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2226%22 font-size=%2226%22>🎲</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- 手机浏览器的状态栏/工具条跟着主题走，不然深色页面顶着一白条 -->
-<meta name="theme-color" content="#070a11" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f4f1e7" media="(prefers-color-scheme: light)">
-<title>鬼骰 · 实时对战</title>
+<meta name="theme-color" content="#070b09" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)">
+<title>鬼骰 ARENA · 实时对战平台</title>
 <script>
 /* 主题要在样式生效前定下来：不然深色用户每次进来先闪一屏浅色。
-   没有手动选过就跟系统走，选过就以选的为准。 */
+   没有手动选过就跟系统走，选过就以选的为准。夜场 / 日场两套都是完整设计。 */
 (function () {
   try {
     var t = localStorage.getItem('theme');
-    if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     document.documentElement.dataset.theme = t;
-  } catch (e) { }
+  } catch (e) { document.documentElement.dataset.theme = 'dark'; }
 })();
 </script>
-<link rel="stylesheet" href="play.css?v=1">
+<link rel="stylesheet" href="play.css?v=2">
 </head>
 <body>
-<div class="ambient"><i></i><i></i><i></i></div>
+<div class="bg-fx" aria-hidden="true"><i class="fx-a"></i><i class="fx-b"></i><i class="fx-c"></i><i class="fx-grain"></i></div>
 
 <header class="top">
   <div class="brand">
     <span class="brand-mark"><span>骰</span></span>
-    <span class="brand-txt"><b>鬼骰<em>LIVE</em></b><span>实时对战 · 权威在服务端</span></span>
+    <span class="brand-txt"><b>鬼骰<em>ARENA</em></b><span>实时对战平台 · 权威在服务端</span></span>
   </div>
+  <nav class="mainnav" id="mainnav" aria-label="平台导航">
+    <button data-nav="home" class="on"><span class="nav-ico">◈</span>大厅</button>
+    <button data-nav="matches"><span class="nav-ico">✦</span>战绩</button>
+    <button data-nav="rank"><span class="nav-ico">▲</span>排行</button>
+  </nav>
   <div class="topright">
     <span id="net" class="chip">连接中…</span>
+    <button id="btnTheme" class="themebtn" title="在夜场与日场之间切换" aria-label="切换夜场 / 日场"><span class="tb-ico">☾</span><span class="tb-txt">夜场</span></button>
     <span id="who" class="chip ghost"></span>
-    <button id="btnTheme" class="btn sm ghost" title="浅色 / 深色切换">配色</button>
     <button id="btnMe" class="btn sm">我的配置</button>
-    <button id="btnAuth" class="btn sm">登录</button>
+    <button id="btnAuth" class="btn sm primary">登录</button>
   </div>
 </header>
 
 <main>
-  <!-- ================= 演武场（首页） ================= -->
+  <!-- ================= 大厅 · 演武场 ================= -->
   <section id="pageHome" class="page">
     <div class="hero">
       <div class="hero-l">
-        <div class="hero-kicker">个人演武场 · 账号制</div>
-        <h1 class="hero-title">我的<em>演武场</em></h1>
-        <p class="hero-sub">这是你自己的场地：跟自己的模型或内置人机练手，这时候你看不到对面；也可以让两台模型互相对打，没有真人上桌，双方信息全公开。想跟朋友过招就开个房间 —— 2 个对战席、3 个观战席。</p>
+        <div class="hero-kicker">GAME&nbsp;AS&nbsp;BENCHMARK · 大话骰 PK</div>
+        <h1 class="hero-title">摆一局<em>鬼骰</em>，<br>让模型替你上桌。</h1>
+        <p class="hero-sub">这是你自己的演武场：跟自己的模型或内置人机练手（你看不到对面），或让两台模型互相对打（信息全公开）。想跟朋友过招就开个房间 —— 2 个对战席、3 个观战席，骰子由服务端摇，输赢全凭算计。</p>
         <div class="hero-dice" id="heroDice"></div>
       </div>
       <div class="hero-r">
-        <div class="hero-stat"><b id="heroModels">0</b><span>我的模型</span></div>
+        <div class="hero-stat"><b id="heroModels">0</b><span>可上桌模型</span></div>
         <div class="hero-stat"><b id="heroRooms">0</b><span>在等的房间</span></div>
         <div class="hero-stat"><b id="heroMatches">0</b><span>打完的局</span></div>
       </div>
     </div>
 
     <div id="turfGate" class="card gate" hidden>
+      <div class="gate-mark">◈</div>
       <h3>演武场要一个账号</h3>
-      <p class="hint">每个人一份自己的场馆：模型挂在你名下，战绩也是你自己的。注册之后这里会列出「我的模型」。</p>
-      <button class="btn primary" id="btnGateLogin">登录 / 注册</button>
+      <p class="hint">每个人一份自己的场馆：模型挂在你名下，战绩也是你自己的。注册之后这里会列出「我的模型」，还能把内置人机放上台。</p>
+      <button class="btn primary big" id="btnGateLogin">登录 / 注册</button>
     </div>
 
     <div id="turfBody" hidden>
-      <div class="board">
-        <div class="card turf">
-          <h3>我的模型<span class="hint in">「跟它打」是你自己上桌，看不到它的推演；「让它上台」把它放进右边的对打台</span></h3>
-          <div id="turfModels" class="turf-list"></div>
-        </div>
-
-        <div class="card turf">
-          <h3>模型对打<span class="hint in">两台模型之间没有真人上桌：双方的骰子和推演你全看得到</span></h3>
-          <div class="duel">
-            <div class="duel-slot"><div class="sub">甲方</div><div id="duelA" class="duel-pick">还没挑</div></div>
-            <div class="duel-vs">VS</div>
-            <div class="duel-slot"><div class="sub">乙方</div><div id="duelB" class="duel-pick">还没挑</div></div>
+      <div class="lobby-grid">
+        <div class="lg-main">
+          <div class="card turf">
+            <h3>我的模型<span class="hint in">「跟它打」你亲自上桌，看不到它的推演；「让它上台」放进右边的对打台</span></h3>
+            <div id="turfModels" class="turf-list"></div>
           </div>
-          <button id="btnDuel" class="btn primary">让它们对打</button>
-          <button id="btnDuelClear" class="btn sm ghost">清空</button>
+          <div class="card turf duel-card">
+            <h3>模型对打<span class="hint in">两台模型之间没有真人：双方骰子与推演你全看得到</span></h3>
+            <div class="duel">
+              <div class="duel-slot seat-a"><div class="sub">甲方</div><div id="duelA" class="duel-pick">还没挑</div></div>
+              <div class="duel-vs">VS</div>
+              <div class="duel-slot seat-b"><div class="sub">乙方</div><div id="duelB" class="duel-pick">还没挑</div></div>
+            </div>
+            <div class="row-actions">
+              <button id="btnDuel" class="btn primary">让它们对打</button>
+              <button id="btnDuelClear" class="btn sm ghost">清空</button>
+            </div>
+          </div>
         </div>
-      </div>
 
-      <div class="card turf">
-        <h3>开房间邀请朋友<span class="hint in">对面那一席只能靠邀请链接坐进来；3 个观战席谁都能进，观战能看到全部信息</span></h3>
-        <div class="two">
-          <div>
+        <div class="lg-side">
+          <div class="card open-table">
+            <h3>开一桌<span class="hint in">你坐甲方，对面靠邀请链接坐进来</span></h3>
             <label>你的昵称<input id="hNick" maxlength="24" placeholder="上桌显示的名字"></label>
             <label>房间名（可选）<input id="hTitle" maxlength="40" placeholder="朋友间的房间名"></label>
-          </div>
-          <div>
             <label>房间口令（可选）<input id="hPass" maxlength="24" type="password" placeholder="留空则拿到房号就能进"></label>
-            <label>最多轮数<input id="hRounds" type="number" min="5" max="300" value="60"></label>
+            <details class="adv"><summary>桌规 · 血量 · 时限</summary>
+              <div class="grid3">
+                <label>规则集<select id="hRules"></select></label>
+                <label>初始血量<input id="hHp" type="number" min="1" max="40" value="8"></label>
+                <label>每手时限（秒）<input id="hTurn" type="number" min="10" max="600" value="45"></label>
+                <label>最多轮数<input id="hRounds" type="number" min="5" max="300" value="60"></label>
+              </div>
+            </details>
+            <button id="btnCreate" class="btn primary block">建房间 · 发邀请</button>
+          </div>
+
+          <div class="card join-table">
+            <h3>进朋友的桌<span class="hint in">默认观战 · 全知视角</span></h3>
+            <div class="joinbar">
+              <input id="jCode" maxlength="8" placeholder="房间码">
+              <input id="jNick" maxlength="24" placeholder="昵称">
+              <input id="jPass" type="password" maxlength="24" placeholder="口令（有才填）">
+              <button id="btnJoin" class="btn block">进房 · 默认观战</button>
+            </div>
+            <div class="hint">链接里带 <code>?room=房间码</code>，点进来先落在观战席；想亲自打就点对战席「我坐这」。</div>
           </div>
         </div>
-        <details class="adv"><summary>桌规</summary>
-          <div class="grid3">
-            <label>规则集<select id="hRules"></select></label>
-            <label>初始血量<input id="hHp" type="number" min="1" max="40" value="8"></label>
-            <label>每手时限（秒）<input id="hTurn" type="number" min="10" max="600" value="45"></label>
-          </div>
-        </details>
-        <div class="row-actions">
-          <button id="btnCreate" class="btn primary">建房间</button>
-          <span class="hint">建好你就是房主，坐在甲方；把邀请链接发给朋友。</span>
-        </div>
-        <div class="joinbar">
-          <input id="jCode" maxlength="8" placeholder="房间码">
-          <input id="jNick" maxlength="24" placeholder="昵称">
-          <input id="jPass" type="password" maxlength="24" placeholder="口令（有才填）">
-          <button id="btnJoin" class="btn">进房 · 默认观战</button>
-        </div>
-        <div class="hint">链接里带 <code>?room=房间码</code>，点进来先落在观战席：观战全知；想亲自打就点对战席「我坐这」。</div>
       </div>
       <div id="homeMsg" class="msg"></div>
     </div>
@@ -120,16 +126,50 @@
         <div id="roomList" class="list rooms"></div>
       </div>
       <div class="card">
-        <h3>战报</h3>
+        <h3>最新战报<button class="btn sm ghost more" data-goto="matches">全部战绩 →</button></h3>
         <div id="matchList" class="list matches"></div>
       </div>
     </div>
   </section>
 
+  <!-- ================= 战绩 ================= -->
+  <section id="pageMatches" class="page" hidden>
+    <div class="pagehead">
+      <div class="ph-kicker">MATCH&nbsp;ARCHIVE</div>
+      <h1>战绩</h1>
+      <p>每一桌的完整记录：谁上的桌、什么规则、打了多少轮、谁赢。同一指纹的胜负才会进同一条天梯。</p>
+    </div>
+    <div class="card filterbar">
+      <label>结果<select id="mFilter"><option value="all">全部</option><option value="win">有胜负</option><option value="draw">平局</option></select></label>
+      <label>规则<select id="mRule"><option value="">全部规则</option></select></label>
+      <label>样本<select id="mCount"><option value="50">最近 50</option><option value="100" selected>最近 100</option><option value="200">最近 200</option></select></label>
+      <span class="sp"></span>
+      <button id="btnReloadMatches" class="btn sm">刷新</button>
+    </div>
+    <div class="card table-card"><div id="matchTable" class="mtable"></div></div>
+  </section>
+
+  <!-- ================= 排行 ================= -->
+  <section id="pageRank" class="page" hidden>
+    <div class="pagehead">
+      <div class="ph-kicker">LADDER&nbsp;·&nbsp;ELO</div>
+      <h1>排行</h1>
+      <p>按「规则 × 提示词」指纹分组的天梯：同一指纹里才比 Elo，跨指纹不混排。赢弱手几乎不涨，输给弱手重扣。</p>
+    </div>
+    <div class="card filterbar">
+      <label>指纹分组<select id="rkGroup"></select></label>
+      <label>思考强度<select id="rkEffort"><option value="all">全部</option><option value="off">关闭</option><option value="low">轻度</option><option value="medium">中度</option><option value="high">深度</option><option value="xhigh">极限</option></select></label>
+      <span class="sp"></span>
+      <button id="btnReloadRank" class="btn sm">刷新</button>
+    </div>
+    <div class="card table-card"><div id="rankTable" class="rtable"></div></div>
+    <div class="hint rank-note" id="rankNote"></div>
+  </section>
+
   <!-- ================= 房间（5 席位） ================= -->
   <section id="pageRoom" class="page" hidden>
-    <div class="bar">
-      <div>房间 <b id="rCode">—</b> <span id="rTitle"></span></div>
+    <div class="bar roombar">
+      <div class="rb-l">房间 <b id="rCode">—</b> <span id="rTitle"></span></div>
       <div class="sp"></div>
       <button id="btnCopy" class="btn sm">复制邀请链接</button>
       <button id="btnMin" class="btn sm" title="回演武场，房间留着（可以同时看好几个房间）">最小化</button>
@@ -141,7 +181,7 @@
         <h3 id="rState">等待入座</h3>
         <div class="kv" id="rCfg"></div>
         <div id="rReady" class="ready-note"></div>
-        <button id="btnStart" class="btn primary">开局</button>
+        <button id="btnStart" class="btn primary big block">开局</button>
         <div class="hint">两边都点了准备才能开局；模型放上对战席就等于它准备好了。</div>
         <div id="roomMsg" class="msg"></div>
       </div>
@@ -179,14 +219,17 @@
           <div class="ident"><h2 id="nameA">—</h2><p id="subA">等待布阵</p></div>
           <div class="status-pill" id="statusA">待机</div>
         </div>
+        <div class="hp-block">
+          <div class="score-num" id="scoreA">0</div>
+          <div class="hp-side">
+            <div class="hp-top"><span>血量</span><div class="pips" id="pipsA"></div></div>
+            <div class="rail"><i id="railA"></i></div>
+          </div>
+        </div>
         <div class="cup-block">
           <div class="cup-cap"><span>甲方骰盅</span><em id="cupNoteA">未摇骰</em></div>
           <div class="dice" id="diceA"></div>
           <div class="counts" id="countsA"></div>
-        </div>
-        <div class="score-block">
-          <div class="score-num" id="scoreA">0</div>
-          <div class="score-side"><span>血量</span><div class="rail"><i id="railA"></i></div></div>
         </div>
         <div class="last-act"><span class="last-cap">最近一手</span><b id="lastA">—</b></div>
         <div class="bid-strip" id="bidA"></div>
@@ -198,7 +241,7 @@
       </article>
 
       <div class="table-center">
-        <div class="table-halo"></div>
+        <div class="table-felt"></div>
         <div class="round-chip" id="centerChip">尚未开桌</div>
         <div class="bid-card">
           <div class="bid-cap">当前最高喊价</div>
@@ -220,14 +263,17 @@
           <div class="ident align-right"><h2 id="nameB">—</h2><p id="subB">等待布阵</p></div>
           <div class="avatar">乙</div>
         </div>
+        <div class="hp-block">
+          <div class="score-num" id="scoreB">0</div>
+          <div class="hp-side">
+            <div class="hp-top"><span>血量</span><div class="pips" id="pipsB"></div></div>
+            <div class="rail"><i id="railB"></i></div>
+          </div>
+        </div>
         <div class="cup-block">
           <div class="cup-cap"><span>乙方骰盅</span><em id="cupNoteB">未摇骰</em></div>
           <div class="dice" id="diceB"></div>
           <div class="counts" id="countsB"></div>
-        </div>
-        <div class="score-block">
-          <div class="score-num" id="scoreB">0</div>
-          <div class="score-side"><span>血量</span><div class="rail"><i id="railB"></i></div></div>
         </div>
         <div class="last-act"><span class="last-cap">最近一手</span><b id="lastB">—</b></div>
         <div class="bid-strip" id="bidB"></div>
@@ -272,14 +318,14 @@
             <h4>登录</h4>
             <label>昵称<input id="lNick" maxlength="24"></label>
             <label>口令<input id="lPass" type="password"></label>
-            <button id="btnLogin" class="btn primary">登录</button>
+            <button id="btnLogin" class="btn primary block">登录</button>
           </div>
           <div class="card">
             <h4>注册</h4>
             <label>昵称<input id="sNick" maxlength="24"></label>
             <label>口令（至少 6 位）<input id="sPass" type="password"></label>
-            <button id="btnSignup" class="btn primary">注册并登录</button>
-            <div class="hint">账号里存你自己的上桌配置：模型端点、API Key（落盘加密，界面只显示掩码）、你的必胜秘诀、桌规偏好。匿名也能玩，但配置不会留下。</div>
+            <button id="btnSignup" class="btn primary block">注册并登录</button>
+            <div class="hint">账号里存你自己的上桌配置：模型端点、API Key（落盘加密，界面只显示掩码）、你的必胜秘诀、桌规偏好。</div>
           </div>
         </div>
       </div>
@@ -326,6 +372,7 @@
   规则、引擎、提示词与实验室同源（<code>src/dice-engine.js</code> / <code>src/context.js</code>）；骰子由服务端摇，客户端只拿到自己那一份视角。
 </footer>
 
-<script src="play.js?v=1"></script>
+<script src="ranking.js?v=2"></script>
+<script src="play.js?v=2"></script>
 </body>
 </html>

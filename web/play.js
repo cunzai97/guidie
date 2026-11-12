@@ -31,11 +31,31 @@ async function api(path, body, method) {
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
   return j;
 }
-function msg(el, text, cls) { const e = typeof el === 'string' ? $(el) : el; e.textContent = text || ''; e.className = 'msg ' + (cls || ''); }
+function msg(el, text, cls) {
+  const e = typeof el === 'string' ? $(el) : el;
+  e.textContent = text || ''; e.className = 'msg ' + (cls || '');
+  /* 说人话的话必须被看见。手机上提示正好掉在屏幕下沿之外的情况很常见（实测差 29px 就等于没有），
+     这时候把它刚好滚进视口（block:'nearest'），不然解释了个寂寞。 */
+  try {
+    if (text && e.scrollIntoView) {
+      const r = e.getBoundingClientRect();
+      if (r.bottom > innerHeight || r.top < 0) e.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  } catch (err) { }
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function show(page) {
   try { if (typeof renderDock === 'function') setTimeout(renderDock, 0); } catch (e) { }
-  for (const p of ['pageHome', 'pageRoom', 'pagePlay']) $(p).hidden = (p !== page); }
+  // 目标页当前藏着 = 真的要切页。切页必须回顶：不然上一页的滚动位置会带过来 ——
+  // 手机上点「跟它打」时 homeMsg 先把大厅滚到底，牌桌一开就停在 scrollY≈1073，自己的骰子全在屏外。
+  const changed = $(page) && $(page).hidden;
+  for (const p of ['pageHome', 'pageMatches', 'pageRank', 'pageRoom', 'pagePlay']) $(p).hidden = (p !== page);
+  // 顶栏导航高亮：房间 / 牌桌不属于三个平台页，回落「大厅」作主场标记
+  const navKey = { pageHome: 'home', pageMatches: 'matches', pageRank: 'rank' }[page] || 'home';
+  document.querySelectorAll('#mainnav [data-nav]').forEach(b => b.classList.toggle('on', b.dataset.nav === navKey));
+  try { document.body.dataset.page = page; } catch (e) { }
+  if (changed) { try { window.scrollTo(0, 0); } catch (e) { } }
+}
 function sec(n) { return n >= 1000 ? (n / 1000).toFixed(0) + 's' : n + 's'; }
 
 // 骰面用 3×3 点阵，跟 web/arena.js 的 PIPS 同一张表、同一画法：
@@ -137,16 +157,22 @@ function seatPicker(host, opts) {
 
 /* ---------------- 配色：默认浅色（潘潘这套），可切深色 ---------------- */
 function setTheme(t) {
-  const th = t === 'dark' ? 'dark' : 'light';
+  const th = t === 'light' ? 'light' : 'dark';
   document.documentElement.dataset.theme = th;
   try { localStorage.setItem('theme', th); } catch (e) { }
-  if ($('btnTheme')) $('btnTheme').textContent = th === 'light' ? '日练' : '夜战';
+  const b = $('btnTheme');
+  if (b) {
+    const ico = b.querySelector('.tb-ico'), txt = b.querySelector('.tb-txt');
+    if (ico) ico.textContent = th === 'light' ? '☀' : '☾';
+    if (txt) txt.textContent = th === 'light' ? '日场' : '夜场';
+    b.title = th === 'light' ? '现在是日场，点一下切到夜场' : '现在是夜场，点一下切到日场';
+  }
 }
 function wireTheme() {
-  // 默认跟系统（head 里已经预热过一次，这里只是把按钮文案对齐）
+  // 默认跟系统（head 里已预热过一次，这里把按钮文案对齐）；没有手动选过：系统浅色才用日场，否则夜场
   let t = null;
   try { t = localStorage.getItem('theme'); } catch (e) { }
-  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   setTheme(t);
   if ($('btnTheme')) $('btnTheme').onclick = () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
 }
@@ -346,6 +372,130 @@ async function loadMatches() {
         <span class="chip ghost">${m.rounds} 轮 · ${esc((m.rules && m.rules.name) || '')}</span></div>`;
     }).join('') : '<div class="hint">还没有战绩 —— 打完一局就会出现在这里。</div>';
   } catch (e) { }
+}
+
+/* ---------------- 平台导航 + 战绩 / 排行两个数据页 ---------------- */
+let matchCache = [], rankCache = [];
+const EFFORT_LABEL = { all: '全部', off: '关闭', low: '轻度', medium: '中度', high: '深度', xhigh: '极限' };
+
+function wireNav() {
+  document.querySelectorAll('#mainnav [data-nav]').forEach(b => b.onclick = () => {
+    const k = b.dataset.nav;
+    if (k === 'matches') { show('pageMatches'); loadMatchesPage(); }
+    else if (k === 'rank') { show('pageRank'); loadRankPage(); }
+    else { show('pageHome'); loadRooms(); loadMatches(); }
+  });
+  document.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => {
+    const k = b.dataset.goto;
+    if (k === 'matches') { show('pageMatches'); loadMatchesPage(); }
+    else if (k === 'rank') { show('pageRank'); loadRankPage(); }
+    else { show('pageHome'); loadRooms(); loadMatches(); }
+  });
+  // 筛选改动只重渲染（数据已缓存），「刷新」才重新拉取
+  ['mFilter', 'mRule', 'mCount'].forEach(id => { const el = $(id); if (el) el.onchange = () => { if (id === 'mCount') loadMatchesPage(); else renderMatchesTable(); }; });
+  ['rkGroup', 'rkEffort'].forEach(id => { const el = $(id); if (el) el.onchange = renderRankTable; });
+  if ($('btnReloadMatches')) $('btnReloadMatches').onclick = loadMatchesPage;
+  if ($('btnReloadRank')) $('btnReloadRank').onclick = loadRankPage;
+}
+
+function fmtDate(t) { const d = new Date(t); const p = n => String(n).padStart(2, '0'); return { md: p(d.getMonth() + 1) + '-' + p(d.getDate()), hm: p(d.getHours()) + ':' + p(d.getMinutes()) }; }
+function seatModelLabel(seat) {
+  if (!seat) return '';
+  if (seat.base === 'human') return '真人';
+  const bot = ((S.ping && S.ping.bots) || []).find(b => b.id === seat.model);
+  return bot ? bot.label : (seat.model || '模型');
+}
+
+async function loadMatchesPage() {
+  const el = $('matchTable'); if (!el) return;
+  el.innerHTML = '<div class="empty-note">读取战绩…</div>';
+  // 规则筛选下拉：用平台规则集填充，保留当前选中
+  const ruleSel = $('mRule');
+  if (ruleSel && ruleSel.options.length <= 1) {
+    const rules = (S.ping && S.ping.rules) || [];
+    const cur = ruleSel.value;
+    ruleSel.innerHTML = '<option value="">全部规则</option>' + rules.map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
+    ruleSel.value = cur;
+  }
+  const limit = +($('mCount') && $('mCount').value) || 100;
+  try { const r = await api('/api/matches?limit=' + limit); matchCache = r.matches || []; }
+  catch (e) { matchCache = []; }
+  renderMatchesTable();
+}
+function renderMatchesTable() {
+  const el = $('matchTable'); if (!el) return;
+  const f = ($('mFilter') && $('mFilter').value) || 'all';
+  const rule = ($('mRule') && $('mRule').value) || '';
+  let rows = matchCache.slice();
+  if (f === 'win') rows = rows.filter(m => m.winner && !m.draw);
+  else if (f === 'draw') rows = rows.filter(m => m.draw);
+  if (rule) rows = rows.filter(m => m.rules && m.rules.id === rule);
+  rows.sort((a, b) => (b.t || 0) - (a.t || 0));
+  if (!rows.length) { el.innerHTML = '<div class="empty-note">这个筛选下还没有对局 —— 去演武场打一局，或放宽筛选。</div>'; return; }
+  const head = '<div class="trow thead"><span>时间</span><span>对阵</span><span>结果</span><span class="center">轮数</span><span>规则</span></div>';
+  el.innerHTML = head + rows.map(m => {
+    const A = m.seats.A || {}, B = m.seats.B || {};
+    const d = fmtDate(m.t);
+    const result = m.draw ? '<span class="draw-tag">平局</span>'
+      : (m.winner ? '<span class="win-tag">' + esc((m.seats[m.winner] || {}).alias || m.winner) + ' 胜</span>' : '<span class="draw-tag">未评</span>');
+    return `<div class="trow">
+      <span class="num">${d.md}<span class="sub2">${d.hm}</span></span>
+      <div><div class="who"><b>${esc(A.alias || '甲')}</b><span class="vs">vs</span><b>${esc(B.alias || '乙')}</b></div>
+        <span class="sub2">${esc(seatModelLabel(A))} / ${esc(seatModelLabel(B))}</span></div>
+      <span>${result}</span>
+      <span class="num center">${m.rounds}</span>
+      <div><span>${esc((m.rules && m.rules.name) || '—')}</span>
+        <span class="sub2">${m.hpMax} 血${m.duplicate ? ' · 复式' : ''}${m.source && m.source !== 'live' ? ' · ' + esc(m.source) : ''}</span></div>
+    </div>`;
+  }).join('');
+}
+
+async function loadRankPage() {
+  const el = $('rankTable'); if (!el) return;
+  el.innerHTML = '<div class="empty-note">结算天梯…</div>';
+  try { const r = await api('/api/matches?limit=500'); rankCache = r.matches || []; }
+  catch (e) { rankCache = []; }
+  // 分组下拉：同一「规则 × 提示词」指纹一张榜，默认选局数最多的一组
+  const gsel = $('rkGroup');
+  const groups = (window.ArenaRanking ? ArenaRanking.listGroups(rankCache) : []);
+  if (gsel) {
+    const cur = gsel.value;
+    gsel.innerHTML = groups.length ? groups.map(g => `<option value="${esc(g.key)}">${esc(g.rulesName || g.ruleset_hash)}${g.variant ? ' · ' + esc(g.variant) : ''}（${g.n} 局）</option>`).join('') : '<option value="">暂无分组</option>';
+    if (groups.some(g => g.key === cur)) gsel.value = cur;
+  }
+  renderRankTable();
+}
+function renderRankTable() {
+  const el = $('rankTable'); if (!el) return;
+  const note = $('rankNote');
+  if (!window.ArenaRanking) { el.innerHTML = '<div class="empty-note">排名模块没加载出来。</div>'; if (note) note.textContent = ''; return; }
+  const gkey = ($('rkGroup') && $('rkGroup').value) || '';
+  const effort = ($('rkEffort') && $('rkEffort').value) || 'all';
+  let inGroup = gkey ? rankCache.filter(m => ArenaRanking.groupKey(m) === gkey) : rankCache;
+  const filtered = ArenaRanking.filterEffort(inGroup, effort);
+  // 真人没有端点指纹：把昵称当模型位，让不同玩家各占一条，而不是全并成一个「human」
+  const normalized = filtered.map(m => Object.assign({}, m, { seats: {
+    A: m.seats.A ? Object.assign({}, m.seats.A, m.seats.A.base === 'human' ? { model: m.seats.A.alias || 'human' } : {}) : null,
+    B: m.seats.B ? Object.assign({}, m.seats.B, m.seats.B.base === 'human' ? { model: m.seats.B.alias || 'human' } : {}) : null,
+  } }));
+  const board = ArenaRanking.elo(normalized);
+  const g = ArenaRanking.listGroups(inGroup)[0];
+  if (note) note.textContent = `当前分组：${(g && (g.rulesName || g.ruleset_hash)) || '—'} · 强度：${EFFORT_LABEL[effort] || effort} · 样本 ${filtered.length} 局 · 不满 ${ArenaRanking.PROVISIONAL_GAMES} 局为暂定分。同一指纹内才比 Elo，跨指纹不混排。`;
+  if (!board.length) { el.innerHTML = '<div class="empty-note">这一组 / 这一档还没有分出胜负的对局 —— 换一组或放宽强度筛选。</div>'; return; }
+  const head = '<div class="trow thead"><span class="center">#</span><span>选手</span><span>积分</span><span>胜负</span><span class="center">局数</span><span class="right">胜率</span></div>';
+  el.innerHTML = head + board.map((e, i) => {
+    const rc = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
+    const modelLabel = e.base === 'human' ? '真人' : (((S.ping && S.ping.bots) || []).find(b => b.id === e.model) || {}).label || e.model || '模型';
+    return `<div class="trow">
+      <span class="rank-badge ${rc}">${i + 1}</span>
+      <div><b>${esc(e.alias)}</b>${e.provisional ? ' <span class="prov">暂定</span>' : ''}
+        <span class="sub2">${esc(modelLabel)}</span></div>
+      <span class="rating-num">${e.rating}</span>
+      <span class="num">${e.wins} 胜 ${e.losses} 负${e.draws ? ' ' + e.draws + ' 平' : ''}</span>
+      <span class="num center">${e.games}</span>
+      <span class="num right">${Math.round(e.winRate * 100)}%</span>
+    </div>`;
+  }).join('');
 }
 
 /* ---------------- 房间：2 对战席 + 3 观战席 ---------------- */
@@ -709,6 +859,12 @@ function renderHp() {
     const v = hp[w] == null ? r.hpMax : hp[w];
     if (sc) sc.textContent = v;
     if (rail) rail.style.width = Math.max(0, Math.min(100, v / (r.hpMax || 1) * 100)) + '%';
+    const pips = $('pips' + w);
+    if (pips) {
+      const max = r.hpMax || 1; let ph = '';
+      for (let i = 0; i < max; i++) ph += `<i class="${i < v ? 'on' : ''}"></i>`;
+      pips.innerHTML = ph;
+    }
     if (st) {
       const txt = v <= 0 ? '倒下' : (turnSeat === w ? '思考中' : (seat.kind === 'me' ? (seat.connected ? '在线' : '离线') : KIND_SHORT[seat.kind] || '待机'));
       st.textContent = txt;
@@ -966,6 +1122,14 @@ function placeAction() {
   const compact = isCompact();
   markArenaOrder();          // 每次安置出价区时顺带标记单列顺序：换座、进房、转屏都能跟上
   const bar = document.querySelector('.actionbar');
+  const note = $('actMsg');
+  /* 提示（#actMsg）必须跟着出价区走。以前只搬 #action 进我方卡片，提示留在 .actionbar 里，
+   * 手机上点灰档的那句解释落在下面一屏之外（实测要再滚 411px），看起来就是「按了没反应」。*/
+  const put = host => {
+    if (!host) return;
+    if (act.parentElement !== host) host.appendChild(act);
+    if (note && note.parentElement !== host) host.appendChild(note);
+  };
   for (const w of ['A', 'B']) {
     const slot = $('act' + w), think = $('thinkBox' + w);
     if (w === mySeat && compact) {                 // 手机：我自己的卡片里不放按钮，也不留空的推演框
@@ -974,14 +1138,14 @@ function placeAction() {
       continue;
     }
     if (w === mySeat) {
-      if (slot) { slot.hidden = false; slot.appendChild(act); }
+      if (slot) { slot.hidden = false; put(slot); }
       if (think) think.hidden = true;
     } else {
       if (slot) slot.hidden = true;
       if (think) think.hidden = false;
     }
   }
-  if (!mySeat || compact) { if (bar && act.parentElement !== bar) bar.appendChild(act); }
+  if (!mySeat || compact) put(bar);
 }
 // 转屏 / 分屏 / 桌面窗口缩到窄：跨过 820px 就重新安置出价区，不然按钮会留在错的容器里
 let lastCompact = isCompact();
@@ -1064,8 +1228,8 @@ function renderAction(v) {
       <div class="grp zhai-grp"><div class="lab">斋 / 未斋</div>
         <div class="chips modes-chips">
           ${zc('normal', '普通抬价', whyMode('normal') || '当前个数下不能按未斋抬价')}
-          ${zc('toZhai', '转斋', isClassic ? '经典规则里喊点数 1 就是斋' : '转斋要把个数降到一半（' + (prev ? Math.ceil(prev.count / 2) : '—') + ' 个）')}
-          ${zc('breakZhai', '破斋', '破斋要 2n+1 个（当前 ' + (prev ? prev.count : '—') + ' 个 → ' + (prev ? prev.count * 2 + 1 : '—') + ' 个）')}
+          ${zc('toZhai', '转斋', whyMode('toZhai'))}
+          ${zc('breakZhai', '破斋', whyMode('breakZhai'))}
         </div>${whyNow ? `<div class="why">${esc(whyNow)}</div>` : ''}
         ${whyNow ? '' : `<div class="zhai-hint">${zhaiHint}</div>`}</div>
       <div class="preview">落子预览：<b id="pv"></b></div>` : '<div class="hint">已无价可喊，只能开盅。</div>'}
@@ -1232,7 +1396,7 @@ async function boot() {
   } catch (e) { $('net').textContent = '连不上服务'; $('net').className = 'chip danger'; }
   try { if (S.sid) S.me = (await api('/api/me')).me; } catch (e) { S.sid = ''; localStorage.removeItem('sid'); }
   setWho();
-  wireTheme(); wireHome(); wireRoom(); wireModal();
+  wireTheme(); wireNav(); wireHome(); wireRoom(); wireModal();
   await initHome();
   wireStage();
   show('pageHome');

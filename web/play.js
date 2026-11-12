@@ -1219,11 +1219,11 @@ function renderAction(v) {
       <span>上一手 <b>${esc(prevTxt)}</b></span>
     </div>
     ${bids.length ? `<div class="grp"><div class="lab">个数</div><div class="chips counts-chips">${
-      counts.map(c => `<button class="${c === S.sel.count ? 'on' : ''}" data-c="${c}">${c} 个</button>`).join('')}</div></div>
-      <div class="grp"><div class="lab">点数（2&lt;3&lt;4&lt;5&lt;6&lt;1）</div><div class="chips faces-chips">${
+      counts.map(c => `<button class="${c === S.sel.count ? 'on' : ''}" data-c="${c}">${c}<span class="c-unit"> 个</span></button>`).join('')}</div></div>
+      <div class="grp"><div class="lab">点数<span class="lab-order">（2&lt;3&lt;4&lt;5&lt;6&lt;1）</span></div><div class="chips faces-chips">${
       faces.map(f => {
         const ok = modesFor(S.sel.count, f).length;
-        return `<button class="${f === S.sel.face ? 'on' : ''} ${ok ? '' : 'no'}" data-f="${f}" title="${ok ? '' : '这个点数在当前个数下没有合法走法'}">${FACE_LABEL[f]}</button>`;
+        return `<button class="${f === S.sel.face ? 'on' : ''} ${ok ? '' : 'no'}" data-f="${f}" title="${ok ? '' : '这个点数在当前个数下没有合法走法'}">${f}<span class="f-note">${f === 1 ? '（最大·斋）' : ''}</span></button>`;
       }).join('')}</div></div>
       <div class="grp zhai-grp"><div class="lab">斋 / 未斋</div>
         <div class="chips modes-chips">

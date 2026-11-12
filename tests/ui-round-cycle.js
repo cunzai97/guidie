@@ -219,6 +219,21 @@ const INJECT = `(function(){
       goInView: r ? (r.top >= 0 && r.bottom <= innerHeight + 1) : null,
       goH: r ? Math.round(r.height) : null, order };
   })()`;
+  // 手机首屏信息量探针：状态条与出价区之间必须放得下自家骰盅和当前最高喊价，
+  // 且出价区档位不横溢、状态条不被挤成竖字。这四条就是「手机上只能看到一点点信息」的回归对象。
+  const FIT = `(function () {
+    window.scrollTo(0, 0);
+    const bar = document.querySelector('.actionbar'), pb = document.querySelector('.playbar');
+    const myDice = document.getElementById((typeof S !== 'undefined' && S.plan === 'B') ? 'diceB' : 'diceA');
+    const bv = document.getElementById('bidBox'), act = document.getElementById('action'), rc = document.getElementById('roundChip');
+    if (!bar || !pb || !myDice || !bv || !act) return null;
+    const br = bar.getBoundingClientRect(), pr = pb.getBoundingClientRect(), dr = myDice.getBoundingClientRect(), vr = bv.getBoundingClientRect();
+    return { barTop: Math.round(br.top), barH: Math.round(br.height), pbH: Math.round(pr.height),
+      diceAboveBar: dr.bottom <= br.top + 1, diceBelowPb: dr.top >= pr.bottom - 1,
+      bidVisible: vr.top < br.top && vr.bottom > pr.bottom,
+      actHScroll: act.scrollWidth - act.clientWidth, barHScroll: bar.scrollWidth - bar.clientWidth,
+      roundChipH: rc ? Math.round(rc.getBoundingClientRect().height) : null };
+  })()`;
   const nick = 'rc' + Date.now().toString(36).slice(-5);
   await ev(`fetch('/api/signup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nick:'${nick}',pass:'pw-${nick}'})}).then(r=>r.json()).then(j=>{if(j.token)localStorage.setItem('sid',j.token);return 1})`, true);
   await send('Page.navigate', { url: BASE + '/web/play.html' }); await sleep(2600);
@@ -233,12 +248,13 @@ const INJECT = `(function(){
     over:S.view&&S.view.over,state:S.room&&S.room.state,hp:S.room&&S.room.hp})`);
 
   // 打够 ROUNDS 轮：轮到我就有开盅就开盅（结算路径要真被打到），否则喊一手
-  let acted = 0, lastRound = 0, waited = 0, geo = null;
+  let acted = 0, lastRound = 0, waited = 0, geo = null, fit = null;
   while (waited++ < 240) {
     const s = JSON.parse(await state());
     if (s.viol > 0) break;                            // 已经违规，别再往下走，留着现场
     if (s.over || s.state === 'finished' || s.round > ROUNDS) break;
     if (s.turn !== 'me' || s.btns === 0) { await sleep(300); continue; }
+    if (!fit) { try { fit = await ev(FIT, true); } catch (e) { fit = { err: e.message }; } }
     const opened = await ev(`(function(){var b=document.getElementById('btnOpen');if(!b)return 0;b.click();return 1})()`);
     if (!opened) {
       await ev(`(function(){var b=document.querySelector('[data-c="3"]');if(b)b.click()})()`); await sleep(150);
@@ -320,6 +336,10 @@ const INJECT = `(function(){
     ok(geo && geo.goInView === true, '轮到我时「走这一步」在首屏视口内，不用滚（几何 ' + JSON.stringify(geo) + '）', geo);
     ok(geo && /^fighterB.*table.*fighterA|fighterA.*table.*fighterB$/.test(String(geo.order)) && String(geo.order).indexOf('fighterB') === 0,
       '我坐乙方时我方卡片排在牌桌与对手之上（顺序 ' + (geo && geo.order) + '）', geo);
+    ok(fit && fit.diceAboveBar && fit.diceBelowPb, '手机首屏自家骰盅完整落在状态条与出价区之间（不被盖住）', fit);
+    ok(fit && fit.bidVisible, '手机首屏看得到当前最高喊价', fit);
+    ok(fit && fit.actHScroll <= 0 && fit.barHScroll <= 0, '出价区档位不横向溢出（不用横着滚）', fit);
+    ok(fit && fit.pbH <= 120 && fit.roundChipH <= 30, '吸顶状态条是紧凑两行、回合牌不竖排', fit);
   } else {
     ok(/^act[AB]$/.test(String(geo.actionParent)), '桌面上出价区仍在我方卡片的 act 位里（实际 ' + (geo && geo.actionParent) + '）', geo);
   }

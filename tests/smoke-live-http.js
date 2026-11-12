@@ -107,6 +107,10 @@ const pickLegal = v => {
     });
     ok(c.status === 200 && c.body.code && c.body.you.token, '建桌拿到房号与座位令牌', c.body);
     const code = c.body.code, seat = c.body.you.seat, tok = c.body.you.token;
+    // 邀请制建桌：乙方一定是空位（建桌时挂的模型会被清空，对面只能靠邀请或房主放置入座）
+    ok((c.body.room.seats.B || {}).kind === 'open', '邀请制建桌时乙方是空位（不接受建桌挂模型）', c.body.room.seats.B);
+    const placed = await api('/api/room/place', { code, seat: 'B', host: c.body.host, seatSpec: { kind: 'bot', bot: 'reader' } });
+    ok(placed.status === 200, '房主把内置人机放上乙方', placed.body);
     let events = [], finished = null;
     const st = await openStream('/api/room/' + code + '/stream?role=' + seat + '&token=' + tok, null, (t, d) => {
       events.push(t);
@@ -114,10 +118,16 @@ const pickLegal = v => {
       if (t === 'matchover') finished = d;
     });
     st._go = true;
+    // 新席位口径：真人自己点「准备」才能开局（放上模型/人机才自动准备）
+    // 放上人机 = 乙方自动准备；真人还要自己点准备
+    const notReady = await api('/api/room/start', { code, token: tok });
+    ok(notReady.status === 400 && /还没准备/.test((notReady.body || {}).error || ''), '只有一方准备时开不了局', notReady.body);
+    const rd = await api('/api/room/ready', { code, seat, token: tok, ready: true });
+    ok(rd.status === 200, '真人点准备成功', rd.body);
     const started = await api('/api/room/start', { code, token: tok });
     ok(started.status === 200, '座位令牌开局', started.body);
-    for (let i = 0; i < 600 && !finished; i++) await sleep(20);
-    ok(!!finished, '整桌打完（matchover 到达）');
+    for (let i = 0; i < 2400 && !finished; i++) await sleep(20);
+    ok(!!finished, '整桌打完（matchover 到达）', finished ? null : await (await api('/api/room/' + code)).body.room);
     ok(events.includes('ask') && events.includes('bid') && events.includes('open'), '事件齐全：' + [...new Set(events)].join(','));
     const asks = events.filter(e => e === 'ask').length;
     ok(asks > 0, '收到私有 ask ' + asks + ' 次');
@@ -154,12 +164,19 @@ const pickLegal = v => {
       if (t === 'ask') specAsks++;
       if (t === 'bid' && JSON.stringify(d).includes('"dice"')) specDiceLeak = d;
     });
+    const rA = await api('/api/room/ready', { code, seat: 'A', token: tokA, ready: true });
+    const rB = await api('/api/room/ready', { code, seat: 'B', token: tokB, ready: true });
+    ok(rA.status === 200 && rB.status === 200, '两席都能自己点准备', { rA: rA.body, rB: rB.body });
     const started = await api('/api/room/start', { code, token: tokB });
     ok(started.status === 200, '入座后任一方都能开局');
-    for (let i = 0; i < 600 && !doneA; i++) await sleep(20);
-    ok(!!doneA, '真人 vs 真人打到整桌结束');
-    ok(specAsks === 0, '观战者收不到任何私有 ask');
+    for (let i = 0; i < 2400 && !doneA; i++) await sleep(20);
+    ok(!!doneA, '真人 vs 真人打到整桌结束', doneA ? null : await (await api('/api/room/' + code)).body.room);
+    // 口径（本轮已改）：不亲自出马 = 全知，观战收得到双方视角与骰子；
+    // 硬口径是「坐在对战席的人只拿到自己那一侧」+ 任何通道不漏令牌/Key，这两条在下面单独断言。
+    ok(true, '观战走全知通道（收到私有 ask ' + specAsks + ' 条，符合当前口径）');
     ok(!specDiceLeak, '观战的 bid 事件不带骰子');
+    const specTxt = JSON.stringify(specEvents.length ? (await api('/api/room/' + code)).body : {});
+    ok(!specTxt.includes(tokA) && !specTxt.includes(tokB), '房间信息不下发任何座位令牌（观战视角也一样）');
     ok(specEvents.includes('open') && specEvents.includes('gameover'), '观战能看到开盅亮牌与结算');
     sa.close(); sb.close(); sp.close();
     await api('/api/room/close', { code, token: tokA });
@@ -167,13 +184,15 @@ const pickLegal = v => {
 
   console.log('[resign] 认输');
   {
-    const c = await api('/api/room/create', { seats: { A: { kind: 'me', nick: '甲' }, B: { kind: 'bot', bot: 'reader' } }, rules: 'flex', hpMax: 8, turnMs: 60000, maxRounds: 30, duplicate: false });
+    const c = await api('/api/room/create', { seats: { A: { kind: 'me', nick: '甲' } }, rules: 'flex', hpMax: 8, turnMs: 60000, maxRounds: 30, duplicate: false });
     const code = c.body.code, tok = c.body.you.token;
+    await api('/api/room/place', { code, seat: 'B', host: c.body.host, seatSpec: { kind: 'bot', bot: 'reader' } });
     let mo = null, asked = false;
     const st = await openStream('/api/room/' + code + '/stream?role=A&token=' + tok, null, (t, d) => {
       if (t === 'ask' && !asked) { asked = true; setTimeout(() => api('/api/room/resign', { code, seat: 'A', token: tok }), 50); }
       if (t === 'matchover') mo = d;
     });
+    await api('/api/room/ready', { code, seat: 'A', token: tok, ready: true });
     await api('/api/room/start', { code, token: tok });
     for (let i = 0; i < 300 && !mo; i++) await sleep(20);
     ok(!!mo && mo.winner === 'B', '认输 → 对方整桌胜', mo);

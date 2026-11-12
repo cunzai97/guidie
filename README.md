@@ -460,10 +460,13 @@ DICE_LOCAL_PORTS=8790,8791 bash live.sh   # 自己家用：放行本机模型网
 别把本机 8790/8791 这类网关地址写进给公众看的配置里。
 
 ```bash
+bash scripts/check-live.sh       # 实时对战全量回归：六组 21 项，零 token，自起临时服务跑完自动关
 node tests/test-live-pvp.js      # 零 token：视角隐私 / 座位装配 / 复式 / 认输 / 与 CLI 逐手一致
+node tests/test-live-settle.js   # 零 token：开盅的「谁喊 / 谁开」、判负方向、结算后必再问到人
 BASE=http://127.0.0.1:8898 node tests/smoke-live-http.js           # 真起服务走一遍 HTTP + SSE
 SMOKE_LLM=1 PRESET=<预设id> BASE=... node tests/smoke-live-http.js # 额外验一桌真模型（会花钱）
 node tests/ui-check.js           # 无头 Chrome 真点一遍：开桌 → 开局 → 喊价 → 对手应答 → 开盅结算
+node tests/ui-round-cycle.js     # 无头 Chrome：提交回调 vs 下一手 ask 的竞态不变式（WIN=390,844 跑手机）
 ```
 
 `ui-check.js` 用无头 Chrome + CDP（默认 `/usr/bin/google-chrome`，`BROWSER=` 可换），

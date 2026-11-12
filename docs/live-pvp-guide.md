@@ -106,10 +106,30 @@ nginx 那份配置不用改（它反代的就是 `127.0.0.1:18898`），安全�
 ```bash
 bash live.sh                       # 起（默认 127.0.0.1:8898）
 HOST=0.0.0.0 bash live.sh          # 让局域网朋友能进
-node tests/test-live-pvp.js        # 零 token 接口自检
-BASE=http://127.0.0.1:8898 node tests/smoke-live-http.js   # HTTP + SSE 冒烟
-node tests/ui-check.js             # 无头 Chrome 真点一遍页面
 ```
+
+**一条命令跑全部回归**（零 token，自己起临时服务、跑完自动关）：
+
+```bash
+bash scripts/check-live.sh                                  # 全自动
+BASE=http://127.0.0.1:8898 bash scripts/check-live.sh       # 对着你正在跑的那台验
+```
+
+它分六组，每组只为一件事，别当成「多跑几个脚本」：
+
+| 组 | 验什么 | 用例 |
+|---|---|---|
+| 1 规则口径 | 实时对战与跑批共用同一份引擎，漂了就全错 | `test-rules.js` |
+| 2 内置人机 | 免费陪练必须合法且真会读牌 | `test-bots-legal / test-oracle / test-reader / test-deep` |
+| 3 服务端 | 座位与隐私、复式换座、与实验室逐手一致；**开盅的「谁喊 / 谁开」「够→开的人输」、结算后必再问到人** | `test-live-pvp.js`、`test-live-settle.js` |
+| 4 传输通道 | 浏览器 SSE 与小程序长轮询共用同一份事件流、可见性过滤、断线补帧 | `smoke-live-http / test-mini-poll / test-mini-transport / smoke-mini-channel / test-miniprogram*` |
+| 5 真浏览器 | 无头 Chrome 真点：新席位全流程；**提交开盅的 POST 回调不得抹掉服务端已推来的下一手按钮**（把响应延迟 250ms 做成必然时序），桌面与手机两视口 | `ui-check.js`、`ui-round-cycle.js` |
+| 6 上下文与排名 | 回声不入历史、复盘接线、指纹与 Elo 口径 | `test-echo-prune / test-reflect / test-ranking / smoke-chat / smoke-memory` |
+
+其中 `test-live-settle.js` 与 `ui-round-cycle.js` 是为这轮修掉的三个 bug 专门补的：
+开盅记录把「喊价的人」印成「开盅的人」、「够：喊的人输」把判负方向写反、
+以及开盅之后出价按钮消失（只能干等到超时被自动接手）。两条在未修的代码上都能稳定跑失败，
+所以改 `web/play.js` 的开盅渲染或提交回调后，第 5 组两个视口必须重跑。
 
 停：`Ctrl-C`，或找到进程 `ss -ltnp 'sport = :8898'` 看 PID 再 `kill`。
 数据都在 `DICE_DATA_DIR`（默认 `data/`，已 gitignore）；删掉就等于清空账号和战绩。

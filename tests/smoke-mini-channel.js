@@ -87,6 +87,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     ok(cr.status === 200, '建桌成功', cr.body);
     const code = cr.body.code, token = cr.body.you.token;
 
+    // 邀请制建桌乙方是空位：房主把内置人机放上去（放上即自动准备），真人这边自己点准备
+    const placed = await call('POST', '/api/room/place', { code, seat: 'B', host: cr.body.host, seatSpec: { kind: 'bot', bot: 'reader' } });
+    ok(placed.status === 200, '房主把内置人机放上乙方', placed.body);
+    const rd = await call('POST', '/api/room/ready', { code, seat: 'A', token, ready: true });
+    ok(rd.status === 200, '甲点准备', rd.body);
     const st = await call('POST', '/api/room/start', { code, token });
     ok(st.status === 200, '开局成功', st.body);
 

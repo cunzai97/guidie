@@ -7,7 +7,8 @@ global.fetch = async (url, opt) => {
   const body = JSON.parse(opt.body);
   const msgs = body.messages;
   const lastUser = [...msgs].reverse().find(m => m.role === 'user').content;
-  const isSummary = /请你自己写一段复盘总结/.test(lastUser);
+  // 轮末复盘的问法改过几次，这里按当前提示词原文匹配（旧问法一并留着，便于回滚时仍可用）
+  const isSummary = /写一段你要带到后续回合的复盘|请你自己写一段复盘总结/.test(lastUser);
   let content;
   if (isSummary) content = '复盘反思：对手这轮倾向低喊试探，亮牌看到他真实骰子，反推他是想诱我开盅，下一轮据此反制。';
   else if (/① 开盅/.test(lastUser)) content = '对手在诈。\n开盅';

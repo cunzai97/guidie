@@ -111,8 +111,12 @@ async function waitUp() {
     ok(bad.status === 403, '错令牌被拒（403）', bad.status);
     const noTok = await poll(code + '/poll?role=A&since=0&wait=0');
     ok(noTok.status === 403, '不给令牌也被拒（403）', noTok.status);
-    const viewAsSpec = await poll(code + '/poll?role=spec&token=' + tokA + '&since=0&wait=0');
-    ok(viewAsSpec.status === 200, '观战不需要令牌');
+    const viewAsSpec = await poll(code + '/poll?role=spec&since=0&wait=0');
+    ok(viewAsSpec.status === 200, '观战不需要令牌（裸 spec 通道可用）', viewAsSpec.status);
+    // 席位互斥：拿着对战席的令牌去开观战通道会被拒 —— 亲自出马就只能看自己那一侧
+    const specWithSeat = await poll(code + '/poll?role=spec&token=' + tokA + '&since=0&wait=0');
+    ok(specWithSeat.status === 403 && /对战席/.test((specWithSeat.body || {}).error || ''),
+      '对战席令牌不能当观战用（席位互斥）', specWithSeat.body);
 
     // —— 在线判定：轮询过后 A 座应显示在线；info 里 connected 由心跳推出来 ——
     const infoNow = (await call('GET', '/api/room/' + code)).body;
@@ -120,6 +124,10 @@ async function waitUp() {
     ok(infoNow.room.seats.B.kind === 'me' && infoNow.room.seats.B.connected === 0, 'B 座入座但没心跳 → 离线', infoNow.room.seats.B);
 
     // —— 开局：两席都在，start 后应能拿到 ask ——
+    // 新席位口径：真人入座后要点准备；放上人机的座位自动已准备
+    const rdB = await call('POST', '/api/room/ready', { code, seat: 'B', token: jn.body.token, ready: true });
+    const rdA = await call('POST', '/api/room/ready', { code, seat: 'A', token: tokA, ready: true });
+    ok(rdB.status === 200 && rdA.status === 200, '两席准备就绪（轮询通道能叫醒对面）');
     const st = await call('POST', '/api/room/start', { code, token: tokA });
     ok(st.status === 200, '开局成功', st.body);
     const askPoll = await poll(code + '/poll?role=A&token=' + tokA + '&since=' + woke.body.cursor + '&wait=3000');

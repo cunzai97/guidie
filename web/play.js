@@ -16,6 +16,9 @@ const S = {
   room: null, plan: null, seatToken: '', role: 'spec',
   view: null, es: null, gameAt: { A: '甲方', B: '乙方' },
   stats: null, timer: null, sel: null, submitted: false,
+  // askSeq：收到「轮到我」的次数。提交行动的回调要靠它判断「我提交之后，服务端是不是已经
+  // 把下一手推给我了」——不能无条件覆盖出价区，否则会把刚渲染好的下一轮按钮抹掉。
+  askSeq: 0,
 };
 
 async function api(path, body, method) {
@@ -620,7 +623,7 @@ function connect() {
     $('pRound').textContent = '第 ' + d.roundNo + ' 轮 · ' + (d.firstBidder === S.plan ? '你先喊' : '对手先喊');
     renderHp();
   });
-  on('ask', d => { S.view = d.view; S.submitted = false; S.revealed = false; showPlay(); renderView(); startTimer(d.deadline); });
+  on('ask', d => { S.askSeq++; S.view = d.view; S.submitted = false; S.revealed = false; showPlay(); renderView(); startTimer(d.deadline); });
   on('bid', d => { noteBid(d); });
   // 全知通道：观战（不亲自出马）看得到两边骰盅、当前喊价、轮到谁
   on('omni', d => {
@@ -859,15 +862,22 @@ function appendSeq(d) {
     while (box.children.length > 8) box.removeChild(box.firstChild);       // 骰盅下面只留最近 8 手
   }
 }
+/* 开盅这一手里的两个人必须分清：事件里的 seat / who 都指「发起开盅那一座」（runner 的 who 是行动者），
+ * 喊价的人只能取服务端算好的 bidBy。以前这里把 seat / who 一个当喊价人一个当开盅人，
+ * 结果两个名字印成同一个（实测出现过“pan 喊 4 个 4，pan 开盅”）。 */
+function bidByOf(d) { return d.bidBy || (d.bid && d.bid.by) || d.seat; }
+function openByOf(d) { return d.openedBy || d.who || d.seat; }
+// 复式换座后同一座位在不同把里可能是不同的人，所以优先用本把的名字表 S.gameAt
+function nm(p, d) { return esc((S.gameAt && S.gameAt[p]) || seatName(p) || (p === 'A' ? '甲方' : '乙方')); }
 function settleRound(d) {
   const div = document.createElement('div');
   div.className = 'row rset';
   const r = d.reveal;
   const dice = r && r.dice ? ['A', 'B'].map(k => `<div class="rdice"><span>${esc(S.gameAt[k] || (k === 'A' ? '甲方' : '乙方'))}</span>${(r.dice[k] || []).map(x => `<i class="die-sm">${x}</i>`).join('')}</div>`).join('') : '';
-  div.innerHTML = `<div>第 ${d.round} 轮：${esc(S.gameAt[d.seat] || d.seat)} 喊 ${d.bid.count} 个 ${d.bid.face}${d.bid.zhai ? '（斋）' : ''} → `
-    + `${esc(S.gameAt[d.who] || d.who)} ${d.slash ? '劈' : '开盅'} · 实际 ${d.actual} 个 → `
-    + `<b style="color:${d.truth ? 'var(--ok)' : 'var(--bad)'}">${d.truth ? '够（喊的人输）' : '不够（喊的人赢）'}</b> · `
-    + `输家 ${esc(S.gameAt[d.loser] || d.loser)}</div>${dice}`;
+  div.innerHTML = `<div>第 ${d.round} 轮：${nm(bidByOf(d), d)} 喊 ${d.bid.count} 个 ${d.bid.face}${d.bid.zhai ? '（斋）' : ''} → `
+    + `${nm(openByOf(d), d)} ${d.slash ? '劈' : '开盅'} · 实际 ${d.actual} 个 → `
+    + `<b style="color:${d.truth ? 'var(--ok)' : 'var(--bad)'}">${d.truth ? '够数：开的人输' : '不够：喊的人输'}</b> · `
+    + `输家 ${nm(d.loser, d)}</div>${dice}`;
   // 最新一轮放最上面：一长串历史往下翻很痛苦，而且老版本把骰子平铺成一片格子，看着像出 bug 了
   $('history').prepend(div);
   const hh = $('history');
@@ -885,14 +895,14 @@ function settleRound(d) {
     const rev = $('reveal');
     if (rev) {
       rev.hidden = false;
-      rev.innerHTML = `第 ${d.round} 轮开盅 · ${esc(seatName(d.seat))} 喊 ${d.bid.count} 个 ${d.bid.face}${d.bid.zhai ? '（斋）' : ''}，`
-        + `${esc(seatName(d.who))} ${d.slash ? '劈' : '开盅'} · 实际 ${d.actual} 个 → `
-        + `<b style="color:${d.truth ? 'var(--ok)' : 'var(--bad)'}">${d.truth ? '够：喊的人输' : '不够：喊的人赢'}</b>`
-        + `<div class="kv">输家 ${esc(seatName(d.loser))} −${d.stake || 1} 血${((d.hp || {})[d.loser] != null ? '（剩 ' + d.hp[d.loser] + '）' : '')}</div>`;
+      rev.innerHTML = `第 ${d.round} 轮开盅 · ${nm(bidByOf(d), d)} 喊 ${d.bid.count} 个 ${d.bid.face}${d.bid.zhai ? '（斋）' : ''}，`
+        + `${nm(openByOf(d), d)} ${d.slash ? '劈' : '开盅'} · 实际 ${d.actual} 个 → `
+        + `<b style="color:${d.truth ? 'var(--ok)' : 'var(--bad)'}">${d.truth ? '够数：开的人输' : '不够：喊的人输'}</b>`
+        + `<div class="kv">输家 ${nm(d.loser, d)} −${d.stake || 1} 血${((d.hp || {})[d.loser] != null ? '（剩 ' + d.hp[d.loser] + '）' : '')}</div>`;
     }
     setLast(d.who, (d.slash ? '劈' : '开盅') + ' → 实际 ' + d.actual + ' 个');
   }
-  logLine(d.openedBy || d.who, `${d.slash ? '劈' : '开盅'}${d.bidBy && d.bidBy !== (d.openedBy || d.who) ? '（开 ' + seatName(d.bidBy) + ' 喊的价）' : ''}：${d.bid.count} 个 ${d.bid.face} · 实际 ${d.actual} 个 · ${d.truth ? '够' : '不够'} · 输家 ${seatName(d.loser)} −${d.stake || 1} 血`
+  logLine(openByOf(d), `${d.slash ? '劈' : '开盅'}${bidByOf(d) !== openByOf(d) ? '（开 ' + seatName(bidByOf(d)) + ' 喊的价）' : ''}：${d.bid.count} 个 ${d.bid.face} · 实际 ${d.actual} 个 · ${d.truth ? '够数→开的人输' : '不够→喊的人输'} · 输家 ${seatName(d.loser)} −${d.stake || 1} 血`
     + (d.hp && d.hp[d.loser] != null ? `（剩 ${d.hp[d.loser]}）` : ''), 'open');
   if (d.hp && S.room) { S.room.hp = d.hp; renderHp(); }
 }
@@ -1022,9 +1032,15 @@ function renderAction(v) {
 }
 async function submit(action) {
   if (S.submitted) return;
+  const seq = S.askSeq;                 // 我是对着哪一手提交的
   msg('#actMsg', '提交中…');
   try {
     await api('/api/room/action', { code: S.room.code, seat: S.plan, token: S.seatToken, action });
+    /* 关键竞态（实测桌面 1400×1100 与人机对局约一半的开盅会踩到，手机上链路更慢更容易）：
+     * 服务端在回答这个 POST 之前，就已经从事件流把「开盅结算 + 下一手的 ask」推下来了。
+     * 那时出价区已经渲染成下一轮的可点按钮，这里再用「已提交」占位去覆盖，按钮就永久消失，
+     * 玩家只能干等到超时被自动接手。所以：期间收到过新的 ask 就不碰出价区，也不重新上锁。 */
+    if (S.askSeq !== seq) { stopTimer(); msg('#actMsg', '这一手已落地，新的一手已经推到了', 'ok'); return; }
     S.submitted = true; stopTimer(); msg('#actMsg', '已提交：' + actText(action) + ' · 等对手', 'ok');
     $('action').innerHTML = '<div class="hint">已提交，等这一手落地。</div>';
   } catch (e) { msg('#actMsg', e.message, 'bad'); }

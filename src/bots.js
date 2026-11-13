@@ -255,8 +255,13 @@ function deepBot(opts = {}) {
   // （reader/oracle 那一类阈值式打法）。单押一边会偏：只押「会读我」时对 oracle 这种不看人的打法
   // 会系统低估它的开盅率，实测对 oracle 只有 8% 胜率；混合后两头都不吃亏。
   const READ = opts.read == null ? 0.5 : opts.read;
+  // 变招：只在估值几乎并列的候选间抽签。带宽默认 0，原 deep 逐位不变。
+  const MIXBAND = opts.mixBand == null ? 0 : opts.mixBand;
+  const MIXT = opts.mixT == null ? 0.001 : opts.mixT;
+  const SEED = opts.seed == null ? 0x6d2b79f5 : opts.seed;
+  let rng = E.mulberry32(SEED), games = 0;
   const H = readerHelpers(BETA, GAMMA, EPS);
-  const tuned = opts.beta != null || opts.gamma != null || opts.eps != null || opts.read != null;
+  const tuned = opts.beta != null || opts.gamma != null || opts.eps != null || opts.read != null || MIXBAND > 0;
   const N = HANDS.length;
   const logit = x => 1 / (1 + Math.exp(-x));
 
@@ -325,7 +330,9 @@ function deepBot(opts = {}) {
       }
 
       let bestAct = null, bestEV = -Infinity, bestLeak = Infinity;
+      const pool = MIXBAND > 0 ? [] : null;
       function consider(act, ev, leak) {
+        if (pool) pool.push({ act, ev });
         if (ev > bestEV + 1e-12) { bestEV = ev; bestAct = act; bestLeak = leak; return; }
         if (ev > bestEV - SLACK && leak < bestLeak) { bestAct = act; bestLeak = leak; }
       }
@@ -400,10 +407,27 @@ function deepBot(opts = {}) {
         for (let i = 0; i < N; i++) leak += Math.abs(wT[i] - wTheirs0[i]);
         consider(b1, ev, leak);
       }
+      // 近似并列才变招：先按真实 EV 找上界，再把带宽内的动作按 Boltzmann 抽签。
+      // 带宽必须远小于「开盅 vs 喊价」的实际价值差，否则等于随机送轮。
+      if (pool && pool.length > 1) {
+        pool.sort((a, b) => b.ev - a.ev);
+        const top = pool[0].ev;
+        const near = pool.filter(x => x.ev >= top - MIXBAND);
+        if (near.length > 1) {
+          let sum = 0;
+          const w = near.map(x => { const q = Math.exp((x.ev - top) / MIXT); sum += q; return q; });
+          let u = rng() * sum;
+          for (let i = 0; i < near.length; i++) {
+            u -= w[i];
+            if (u <= 0) { bestAct = near[i].act; bestEV = near[i].ev; break; }
+          }
+        }
+      }
       const out = bestAct || { type: 'open', slash: false };
       if (opts.debug) out.ms = Date.now() - t0;
       return out;
     },
+    reset() { rng = E.mulberry32((SEED + Math.imul(++games, 0x9e3779b1)) >>> 0); },
   };
 }
 
@@ -494,6 +518,114 @@ function readerBot(opts = {}) {
   };
 }
 
+/* ==================================================================== apex v4
+ * 用「结算后可见的真实行为」校准对开盅的判断，而不是在搜索里假设一套固定脾气。
+ *
+ * 为什么不是继续加搜索深度：本地校准显示，近似模型一旦高估「对手不会开我的诈唬」，
+ * 多出来的反价搜索会成批制造末价假货，开盅正确率反而被 deep 压住。v4 因此以当前最强
+ * 的稳健策略（READ=1）为底座，只加两件能被过程指标验证的事：
+ *
+ *  ① 在线开盅模型：每轮亮牌后回放公开序列，统计 qT=P(它开|我这手真)、qF=P(它开|我这手假)。
+ *     若 qF−qT 长期接近 0（对手根本不看我的牌），就降低「它读我」的权重；反之保持满读。
+ *  ② 变招：只在 EV 几乎并列时抽签。带宽远小于开盅价值，混合的是同价动作而不是随机送轮。
+ *
+ * 对手手牌只在 history 结算后读取，当前决策绝不使用未亮暗牌。
+ */
+function apexAdaptiveBot(opts = {}) {
+  const READ1 = opts.read1 == null ? 1 : opts.read1;
+  const MIXBAND = opts.mixBand == null ? 0.0012 : opts.mixBand;
+  const MIXT = opts.mixT == null ? 0.0006 : opts.mixT;
+  const SEED = opts.seed == null ? 0x51f15e : opts.seed;
+  const ADAPT = opts.adapt !== false;
+
+  const Q = { nT: 0, kT: 0, nF: 0, kF: 0 };
+  const st = { seen: 0, snap: null, games: 0 };
+  let read = READ1, base = null, baseRead = null, minRead = READ1, maxRead = READ1;
+
+  function qVals() {
+    const qT = Math.max(0.02, Math.min(0.98, (Q.kT + 0.7) / (Q.nT + 2)));
+    const qF = Math.max(0.02, Math.min(0.98, (Q.kF + 1.2) / (Q.nF + 2)));
+    return { qT, qF };
+  }
+  function targetRead() {
+    if (!ADAPT) return READ1;
+    const n = Q.nT + Q.nF;
+    if (n < 6) return READ1;
+    const { qT, qF } = qVals();
+    const lift = qF - qT;                       // 它开我假货的额外倾向
+    const conf = n / (n + 8);
+    const dead = Math.max(0, Math.min(1, (0.12 - lift) / 0.12));
+    // 只在证据很足且它明显不按我的真假开盅时退到 0.7；底座仍是满读。
+    return Math.max(0.7, READ1 - 0.3 * conf * dead);
+  }
+  function ensureBase() {
+    const r = Math.round(read * 20) / 20;
+    if (base && baseRead === r) return;
+    baseRead = r;
+    base = deepBot({ read: r, mixBand: MIXBAND, mixT: MIXT, seed: SEED + Math.imul(st.games + 1, 0x9e3779b1) });
+  }
+
+  // 回放一轮结算后的公开序列：每次我方喊价之后对手的那一个动作，就是一条开盅样本。
+  function learnRound(hist, who, opp) {
+    const snap = st.snap;
+    if (!snap || snap.no !== hist.no || !hist.dice) return;
+    let seq = snap.seq.slice();
+    if (hist.opener === opp && (!seq.length || seq[seq.length - 1].kind !== 'open')) {
+      seq.push({ who: opp, kind: 'open', slash: !!hist.slash, zhai: !!hist.zhai });
+    }
+    const all = hist.dice.A.concat(hist.dice.B);
+    let zhai = false, lastMine = null;
+    for (const ev of seq) {
+      if (ev.kind === 'bid') {
+        const isZ = ev.zhai != null ? !!ev.zhai : (ev.face === 1 ? true : ev.mode === 'toZhai' ? true : ev.mode === 'breakZhai' ? false : zhai);
+        if (ev.who === who) {
+          lastMine = E.countFace(all, ev.face, isZ) >= ev.count;
+        } else if (lastMine != null) {
+          if (lastMine) { Q.nT++; } else { Q.nF++; }
+          lastMine = null;
+        }
+        zhai = isZ;
+      } else if (ev.kind === 'open') {
+        if (lastMine != null) {
+          if (lastMine) { Q.nT++; if (ev.who === opp) Q.kT++; }
+          else { Q.nF++; if (ev.who === opp) Q.kF++; }
+          lastMine = null;
+        }
+      }
+    }
+  }
+
+  return {
+    name: 'apex',
+    reset() {
+      Q.nT = Q.kT = Q.nF = Q.kF = 0;
+      st.seen = 0; st.snap = null; st.games++;
+      read = READ1; minRead = maxRead = READ1; base = null; baseRead = null;
+    },
+    stats() {
+      const { qT, qF } = qVals();
+      return { qT: +qT.toFixed(3), qF: +qF.toFixed(3), nT: Q.nT, nF: Q.nF,
+        read: +read.toFixed(3), minRead: +minRead.toFixed(3), maxRead: +maxRead.toFixed(3), mixBand: MIXBAND };
+    },
+    decide(match, who) {
+      const opp = E.other(who);
+      while (match.history.length > st.seen) { learnRound(match.history[st.seen], who, opp); st.seen++; }
+      read = targetRead();
+      if (read < minRead) minRead = read;
+      if (read > maxRead) maxRead = read;
+      ensureBase();
+      const r = match.round;
+      st.snap = { no: r.no, seq: r.seq.slice() };
+      const act = base.decide(match, who);
+      // 给下一轮复盘留下完整序列；引擎原始 seq 已带 zhai，这里补上我方最后一手。
+      st.snap.seq.push(act.type === 'bid'
+        ? { who, kind: 'bid', count: act.count, face: act.face, mode: act.mode || 'normal', zhai: E.zhaiAfter(r, act) }
+        : { who, kind: 'open', slash: !!act.slash });
+      return act;
+    },
+  };
+}
+
 /* ---------- 机器人注册表 ----------
  * 竞技场的下拉框、CLI 的 player 规格、测试都从这张表读；加新机器人只需加一个条目。
  */
@@ -501,6 +633,7 @@ const BOTS = {
   'oracle': { label: 'oracle · 期望最大化', desc: '算清对手手牌分布再决策，纯数学地板，很慢', make: () => oracleBot() },
   'reader': { label: 'reader · 贝叶斯读牌', desc: '把对手喊价当情报读', make: () => readerBot() },
   'deep':   { label: 'deep · 双向读牌 + 终盘', desc: 'reader 的加强版：对手也会读我、叶子按手牌展开、效用按赢局概率', make: () => deepBot() },
+  'apex':   { label: 'apex · 在线行为校准 + 变招', desc: '结算后学习对手开盅条件概率 + 满读策略底座 + 近似同价混合', make: (o) => apexAdaptiveBot(o && typeof o === 'object' ? o : {}) },
 };
 function makeBot(spec, rng) {
   const b = BOTS[spec];
@@ -508,5 +641,5 @@ function makeBot(spec, rng) {
   return b.make(rng || Math.random);
 }
 
-return { legalActions, oracleBot, readerBot, readerBelief, deepBot, qOpen, tail5, BOTS, makeBot };
+return { legalActions, oracleBot, readerBot, readerBelief, deepBot, apexAdaptiveBot, qOpen, tail5, BOTS, makeBot };
 });

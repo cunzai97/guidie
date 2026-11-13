@@ -86,7 +86,7 @@ console.log(`    覆盖：首喊 ${seen.firstBid} · 斋中 ${seen.zhai} · 无�
 
 // [2] 机器人名字稳定（run 记录与排名靠它认身份）
 const names = SPECS.map(s => B.makeBot(s).name);
-assert.deepStrictEqual(names, ['oracle', 'reader', 'deep']);
+assert.deepStrictEqual(names, ['oracle', 'reader', 'deep', 'apex']);
 console.log('[2] 机器人名字稳定 ✓ ' + names.join(' / '));
 
 // [3] 未知 spec 必须报错，不能静默降级

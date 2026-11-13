@@ -121,7 +121,7 @@ dice-rulesets.js   规则配置 + 生成给模型看的规则文本  ← 唯一�
 
 全新前端：左右双选手卡直观对战、中央喊价台、流式实时推演、底部五个明细页（流水 / 决策明细 / 轮末复盘 / 统计 / 模型排名）。决策明细与轮末复盘也按甲方 / 乙方**左右分栏**。
 
-- **内置机器人可直接上桌**：布阵下拉框的第二个分组是 `src/bots.js` 的 `BOTS` 注册表——`oracle`（纯数学地板）、`reader`（贝叶斯读牌）、`deep`（双向读牌 + 终盘）。机器人不连接口，`decideBot` 在页面里本地算一手（合法性与 LLM 走同一条 `checkLegal` + 落子路径，统计口径一致），所以能随时拿它当标尺：想量化「模型有没有超过算概率/读喊价的基线」，左右各配一局就行。机器人不产生 tok、不发复盘请求；对局照样进排名账本，席位记为 `base='bot'`、`model='<spec>'`，所以在榜单上就是一个可对照的天梯锚点（想只看真模型就按 `base` 过滤）。加新机器人 = 在 `BOTS` 里加一个 `{ label, desc, make }`
+- **内置机器人可直接上桌**：布阵下拉框的第二个分组是 `src/bots.js` 的 `BOTS` 注册表——`oracle`（纯数学地板）、`reader`（贝叶斯读牌）、`deep`（双向读牌 + 终盘）、`apex`（结算后在线校准对手开盅行为 + 窄带变招）。机器人不连接口，`decideBot` 在页面里本地算一手（合法性与 LLM 走同一条 `checkLegal` + 落子路径，统计口径一致），所以能随时拿它当标尺：想量化「模型有没有超过算概率/读喊价的基线」，左右各配一局就行。机器人不产生 tok、不发复盘请求；对局照样进排名账本，席位记为 `base='bot'`、`model='<spec>'`，所以在榜单上就是一个可对照的天梯锚点（想只看真模型就按 `base` 过滤）。加新机器人 = 在 `BOTS` 里加一个 `{ label, desc, make }`
 - **模型预设**：增删改 / 复制 / 测试连接 / 拉取模型列表 / 导入导出。配置写 `presets.json`（服务可用时）并同步 `localStorage`，服务没起也能用
 - **每模型思考强度**：`off / low / medium / high / xhigh`。本地 llama-server 走 `chat_template_kwargs.thinking_budget`（1024 / 4096 / 12288 / 24576），远端走 `reasoning_effort`。两个字段都发，端点不认的会忽略。**默认是「中度」**（`settings.defaultEffort`），新建模型也继承中度；复盘请求固定 `off` 以省时。开战前还可直接在布阵区每个席位旁用「思考」下拉临时覆盖本局强度（跟随模型 / 关闭 / 轻度 / 中度 / 深度 / 极限），开战后锁定，不改模型存档
 - **输出预算**：每个模型单独设，默认 8192
@@ -165,8 +165,8 @@ R_A += K × (S_A − E_A)        K = 32，初始 1500，胜 1 / 平 0.5 / 负 0
 # 基线自检（零 token）：两个 bot 对打，验证链路
 node src/pk.js --p0 reader --p1 oracle --deals 30 --out runs/bot-baseline.jsonl
 
-# 模型 vs 基线（reader=读牌最强，oracle=纯数学地板）
-node src/pk.js --p0 llm:8080:my-model --p1 reader --deals 6 --out runs/llm.jsonl
+# 模型 vs 基线（apex=当前最强，deep=双向读牌，reader=读牌，oracle=纯数学地板）
+node src/pk.js --p0 llm:8080:my-model --p1 apex --deals 6 --out runs/llm.jsonl
 
 # 模型 PK
 node src/pk.js --p0 llm:8080:model-a --p1 llm:8081:model-b --deals 10 --rules flex
@@ -255,6 +255,20 @@ node src/analyze.js runs/llm.jsonl
 | deep vs oracle · seed 99 / 31337 | 28 局 | deep 28-0（零封） |
 
 复现：`node src/pk.js --p0 reader --p1 deep --deals 20 --seed 4242 --hp 10 --rules flex`。决策成本 55 ms/步（reader 135 ms）。
+
+### apex（在线行为校准 + 窄带变招）
+
+apex 不靠加深一棵近似搜索树取胜。它每轮亮牌后回放公开序列，直接统计两件事：`qT = P(对手开丨我这手真)`、`qF = P(对手开丨我这手假)`。当 `qF−qT` 长期接近 0（对手根本不看我的牌）时，才把「它读我」的权重从满读退到 0.7；证据不足时不做切换。候选估值几乎并列时在窄带内抽签变招，带宽远小于开盅价值，避免把随机当策略。当前决策底座用 `read=1` 的稳健打法，所有对手手牌只在对局结算后读取。
+
+本地验收（`--rules flex --hp 8`，两批独立种子，每档 10 deal 复式 = 20 局）：
+
+| 对局 | 局分 | 轮胜率 |
+| --- | --- | --- |
+| apex vs deep（seed 77001 / 91001） | **17-3** | 243/394（61.7%） |
+| apex vs reader（seed 77002 / 91002） | **20-0** | 174/238（73.1%） |
+| apex vs oracle（seed 77003 / 91003） | **18-2** | 216/328（65.9%） |
+
+三档合计 55-5，零判负、零异常。对 oracle 的一批样本里在线校准确实把读牌权重降到 0.8，仍取得 7-1。
 
 ### 读牌 reader（贝叶斯对手模型）
 
@@ -394,6 +408,8 @@ tests/                回归与离线冒烟（零 token、不触网）
   test-echo-prune.js  回声不入库 / 不级联回归
   test-oracle.js      概率对拍 7776 枚举 + oracle 性质/冒烟回归
   test-reader.js      读牌后验方向/剥削点修复/确定性/冒烟
+  test-deep.js        双向读牌/终盘效用/确定性/合法性
+  test-apex.js        在线行为校准采样/变招/合法性
   test-ranking.js     Elo 排名：分组/对手强度/身份合并/路径依赖
 
 runs/               实验产物（gitignore）：--out 落盘、calls.jsonl、serve.log

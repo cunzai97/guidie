@@ -155,6 +155,16 @@ R_A += K × (S_A − E_A)        K = 32，初始 1500，胜 1 / 平 0.5 / 负 0
 
 **账本一行**（`matches.jsonl`）：`t / run_id / gameNo / source / seats{A,B}(id,alias,model,base,effort,maxTokens) / ruleset_hash / prompt_hash / variant / rules / target / rounds / points / winner / draw / capped / stats{A,B}`。GET `/api/matches` 返回 `{"matches":[...]}`。无头 CLI 的历史 run 不进这张榜（旧指纹 + 复式换座 schema 不同）。
 
+**清理旧指纹**：规则或提示词改版后，旧对局的指纹再也对不上当前代码，会在「指纹分组」下拉框里留一堆死组，也把同一批选手拆成几份 Elo。只保留当前代码还能复现的组：
+
+```bash
+node scripts/prune-rank-fingerprints.js data/matches-live.jsonl --dry   # 先看分组与条数
+node scripts/prune-rank-fingerprints.js data/matches-live.jsonl         # 先备份再原子重写
+node scripts/prune-rank-fingerprints.js <file> --keep a6c5a8ef|d5b83db6dede   # 只留指定组
+```
+
+默认保留全部内置规则集在当前代码下的指纹（`classic` + `flex`）；读不出来的行原样保留，不静默丢。
+
 ---
 
 ## 无头评测

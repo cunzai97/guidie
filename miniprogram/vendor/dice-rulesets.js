@@ -46,7 +46,7 @@
     firstZhai: true,   // 首喊也能直接喊斋（个数下限同普通首喊 = firstMin）
     firstMin: 3, firstMax: 6, maxCount: 10,
     slash: true, slashStake: 1, stake: 1, autoInfer: true,
-    openLoserLoses: false,  // 开盅只赢家 +1，输家不扣；只有劈才双向结算（±1）
+    openLoserLoses: false,  // 开盅单向：输家 −1，赢家不回血；只有「劈」才双向结算（±1）
   };
 
   const BUILTIN = Object.freeze({ classic: CLASSIC, flex: FLEX });

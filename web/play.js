@@ -98,8 +98,9 @@ function seatPicker(host, opts) {
     }
     if (kind === 'bot') {
       const bots = (S.ping && S.ping.bots) || [];
-      b.innerHTML = `<div class="field"><select class="bot">${bots.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('')}</select>
-        <div class="hint">${esc((bots[0] || {}).desc || '')}</div></div>`;
+      // 下拉框里只显示代号。以前这里还挂一行 desc 当提示，而且挂的是 bots[0]
+      // 的说明（选谁都显示 oracle 的），既啰嗦又不对。
+      b.innerHTML = `<div class="field"><select class="bot">${bots.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('')}</select></div>`;
       b.querySelector('.bot').onchange = e => { st.bot = e.target.value; };
       st.bot = st.bot || (bots[0] && bots[0].id) || 'reader';
       b.querySelector('.bot').value = st.bot;
@@ -189,7 +190,9 @@ function turfRows() {
       spec: { kind: 'llm', configId: c.id },
     }));
   const bots = ((S.ping && S.ping.bots) || [])
-    .map(b => ({ key: 'bot:' + b.id, label: b.label, sub: b.desc || '内置人机', spec: { kind: 'bot', bot: b.id } }));
+    // 人机在台面上只报代号（apex / deep / …）。介绍文字不进卡片，避免
+    // 「apex · 在线行为校准 + 变招」这种一行半的长名字把卡片顶开。
+    .map(b => ({ key: 'bot:' + b.id, label: b.label, sub: '', spec: { kind: 'bot', bot: b.id } }));
   return cfgs.concat(bots);
 }
 function specOf(key) { const row = turfRows().find(r => r.key === key); return row ? row.spec : null; }
@@ -222,7 +225,7 @@ function renderTurf() {
     $('turfModels').innerHTML = rows.length ? rows.map(x => `
       <div class="turf-card">
         <div class="turf-name">${esc(x.label)}</div>
-        <div class="turf-meta">${esc(x.sub)}</div>
+        ${x.sub ? `<div class="turf-meta">${esc(x.sub)}</div>` : ''}
         <div class="turf-meta">提示词 ${x.guideChars ? x.guideChars + ' 字' : '未写'}</div>
         <div class="turf-acts">
           <button class="btn sm" data-fight="${esc(x.key)}">跟它打</button>

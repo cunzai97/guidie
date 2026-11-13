@@ -628,12 +628,15 @@ function apexAdaptiveBot(opts = {}) {
 
 /* ---------- 机器人注册表 ----------
  * 竞技场的下拉框、CLI 的 player 规格、测试都从这张表读；加新机器人只需加一个条目。
+ * label 就是台面上显示的名字：只写代号，不在名字后面挂介绍 —— 一行字里塞
+ * 「apex · 在线行为校准 + 变招」会在座位卡和下拉框里挤成两行，也冲淡代号本身。
+ * 想写说明就写进 desc，它只喂给悬停标题和文档，不进名字。
  */
 const BOTS = {
-  'oracle': { label: 'oracle · 期望最大化', desc: '算清对手手牌分布再决策，纯数学地板，很慢', make: () => oracleBot() },
-  'reader': { label: 'reader · 贝叶斯读牌', desc: '把对手喊价当情报读', make: () => readerBot() },
-  'deep':   { label: 'deep · 双向读牌 + 终盘', desc: 'reader 的加强版：对手也会读我、叶子按手牌展开、效用按赢局概率', make: () => deepBot() },
-  'apex':   { label: 'apex · 在线行为校准 + 变招', desc: '结算后学习对手开盅条件概率 + 满读策略底座 + 近似同价混合', make: (o) => apexAdaptiveBot(o && typeof o === 'object' ? o : {}) },
+  'oracle': { label: 'oracle', desc: '算清对手手牌分布再决策，纯数学地板，很慢', make: () => oracleBot() },
+  'reader': { label: 'reader', desc: '把对手喊价当情报读', make: () => readerBot() },
+  'deep':   { label: 'deep', desc: 'reader 的加强版：对手也会读我、叶子按手牌展开、效用按赢局概率', make: () => deepBot() },
+  'apex':   { label: 'apex', desc: '结算后学习对手开盅条件概率 + 满读策略底座 + 近似同价混合', make: (o) => apexAdaptiveBot(o && typeof o === 'object' ? o : {}) },
 };
 function makeBot(spec, rng) {
   const b = BOTS[spec];

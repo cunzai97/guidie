@@ -42,6 +42,10 @@ const EVENT_CAP = 600;
 const IDLE_MS = 30 * 60 * 1000;        // 一直没人活动 → 回收
 const EMPTY_MS = 10 * 60 * 1000;       // 一条连接都不剩 → 回收
 const POLL_ALIVE_MS = 30000;           // 轮询心跳：25s 一次长轮询 + 5s 余量，超过就算掉线
+/* 空壳席位回收：关掉页面的人不该永远占着座位 —— 以前「离线」的红字能挂一整晚，
+ * 观战席更是三个坑位被同一批匿名游客占死。两条 TTL 都只在「还没开局」时生效。 */
+const SEAT_TTL_MS = +(process.env.DICE_SEAT_TTL_MS || 10 * 60 * 1000);    // 对战席：连续离线 10 分钟就放出来
+const WATCH_TTL_MS = +(process.env.DICE_WATCH_TTL_MS || 15 * 60 * 1000);  // 观战席：15 分钟没心跳就放出来
 const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh'];
 
 const now = () => Date.now();
@@ -213,7 +217,7 @@ class Registry {
     throw new Error('未知座位类型：' + kind);
   }
 
-  join(code, slot, { nick, pass, user } = {}) {
+  join(code, slot, { nick, pass, user, watchToken } = {}) {
     const room = this.get(code);
     if (!room) return { ok: false, reason: '房间不存在或已关闭' };
     if (room.passHash && crypto.createHash('sha256').update(String(pass || '')).digest('hex') !== room.passHash) {
@@ -225,8 +229,10 @@ class Registry {
     const s = room.seats[w];
     s.kind = 'me'; s.nick = nickClean(nick || (user && user.nick)); s.userId = user ? user.id : null;
     s.token = seatToken();
-    // 从观战席挪到对战席：把原来那张观战席空出来，一个人只占一个位置
-    if (user) this.dropWatchOf(room, user.id);
+    // 从观战席挪到对战席：把原来那张观战席空出来，一个人只占一个位置。
+    // 认人三件套：登录账号 / 观战令牌 / —— 匿名访客没有账号，光靠 userId 清不掉，
+    // 于是就出现「同一个人既是甲方的离线玩家、又是观战席 2 的玩家」。令牌必须一起认。
+    this.dropWatchSeat(room, { userId: user && user.id, token: watchToken });
     room.lastActive = now();
     this.emit(room, 'room', { kind: 'seat', seat: w, nick: s.nick, room: this.info(room) }, 'all');
     return { ok: true, seat: w, token: s.token, room: this.info(room) };
@@ -269,14 +275,15 @@ class Registry {
     for (const slot of ['S1', 'S2', 'S3']) {
       const w = room.watch[slot];
       if (w.kind !== 'me') continue;
-      if (watchToken && w.token && w.token === watchToken) return { ok: true, slot, token: w.token, room: this.info(room) };
-      if (user && w.userId === user.id) return { ok: true, slot, token: w.token, room: this.info(room) };
-      if (!user && !w.userId && nm && w.nick === nm) return { ok: true, slot, token: w.token, room: this.info(room) };
+      if (watchToken && w.token && w.token === watchToken) { w.seenAt = now(); return { ok: true, slot, token: w.token, room: this.info(room) }; }
+      if (user && w.userId === user.id) { w.seenAt = now(); return { ok: true, slot, token: w.token, room: this.info(room) }; }
+      if (!user && !w.userId && nm && w.nick === nm) { w.seenAt = now(); return { ok: true, slot, token: w.token, room: this.info(room) }; }
     }
     for (const slot of ['S1', 'S2', 'S3']) {
       const w = room.watch[slot];
       if (w.kind === 'open') {
         w.kind = 'me'; w.nick = nickClean(nick || (user && user.nick)); w.userId = user ? user.id : null; w.token = seatToken();
+        w.seenAt = now();
         room.lastActive = now();
         this.emit(room, 'room', { kind: 'watch', slot, nick: w.nick, room: this.info(room) }, 'all');
         return { ok: true, slot, token: w.token, room: this.info(room) };
@@ -291,7 +298,7 @@ class Registry {
   /* 准备 / 取消准备：只有真人席位需要点，AI 席位放置即准备 */
   /* 主动离开：把这个人从对战席 / 观战席上摘掉。
      之前「离开」只是前端断开，服务端那条 me 席位还挂着，别人看到的就是「虚空的我」。 */
-  leave(code, { user, token } = {}) {
+  leave(code, { user, token, watchToken } = {}) {
     const room = this.get(code);
     if (!room) return { ok: true, gone: true };
     const iAm = p => {
@@ -303,11 +310,9 @@ class Registry {
       return { ok: false, reason: '这一局还在打：先认输，或者等这局结束再走' };
     }
     for (const p of seated) room.seats[p] = blankSeat();
-    if (user) this.dropWatchOf(room, user.id);
-    for (const slot of ['S1', 'S2', 'S3']) {
-      const w = room.watch[slot];
-      if (w && w.kind === 'me' && token && w.token === token) room.watch[slot] = blankSeat();
-    }
+    // 观战席按「账号 / 观战令牌」认人。以前这里拿座位令牌去比观战席的 token，
+    // 永远对不上 —— 纯观战的人点「离桌」，那一席纹丝不动。
+    this.dropWatchSeat(room, { userId: user && user.id, token: watchToken });
     room.lastActive = now();
     // 人都走光了就把这张桌收掉，别留空壳
     const empty = room.state === 'lobby' && room.seats.A.kind === 'open' && room.seats.B.kind === 'open'
@@ -316,13 +321,64 @@ class Registry {
     this.emit(room, 'room', { kind: 'leave', room: this.info(room) }, 'all');
     return { ok: true, seat: seated[0] || null, room: this.info(room) };
   }
-  /* 坐进对战席 / 让位时，顺手清掉这个人的观战席，避免同一个人占两个位置 */
-  dropWatchOf(room, userId) {
-    if (!userId) return;
+  /* 坐进对战席 / 让位 / 离桌时，顺手清掉这个人的观战席，避免同一个人占两个位置。
+     认人两件套：登录账号（userId）、观战令牌（watchToken）。匿名访客只有后者。 */
+  dropWatchSeat(room, { userId, token } = {}) {
+    if (!userId && !token) return false;
+    let hit = false;
     for (const slot of ['S1', 'S2', 'S3']) {
       const w = room.watch[slot];
-      if (w && w.kind === 'me' && w.userId === userId) { room.watch[slot] = blankSeat(); }
+      if (!w || w.kind !== 'me') continue;
+      if ((userId && w.userId === userId) || (token && w.token && w.token === token)) {
+        room.watch[slot] = blankSeat();
+        hit = true;
+        this.emit(room, 'room', { kind: 'watch', slot, nick: '', reason: 'seat-taken', room: this.info(room) }, 'all');
+      }
     }
+    return hit;
+  }
+  dropWatchOf(room, userId) { return this.dropWatchSeat(room, { userId }); }
+  /* 观战席心跳：前端每次拉事件都带 watchToken，超时没动静的观战席由 GC 收回。 */
+  touchWatch(room, token) {
+    if (!token) return false;
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (w && w.kind === 'me' && w.token === token) { w.seenAt = now(); return true; }
+    }
+    return false;
+  }
+  /* 空壳席位回收：只动「还没开局」的桌 —— 开打之后席位由对局自己管（掉线认输另有宽限）。 */
+  reapIdleSeats(room, t = now()) {
+    const alive = p => ((room.seats[p].connected || 0) > 0)
+      || !!(room.pollAt && (t - (room.pollAt[p] || 0)) < POLL_ALIVE_MS);
+    let changed = false;
+    if (room.state === 'lobby') {
+      for (const p of ['A', 'B']) {
+        const s = room.seats[p];
+        if (!s || s.kind !== 'me') { if (s) s.offSince = 0; continue; }
+        if (alive(p)) { s.offSince = 0; continue; }
+        s.offSince = s.offSince || t;
+        if (t - s.offSince >= SEAT_TTL_MS) {
+          const nick = s.nick;
+          room.seats[p] = blankSeat();
+          changed = true;
+          this.emit(room, 'room', { kind: 'leave', seat: p, nick, reason: 'idle', room: this.info(room) }, 'all');
+        }
+      }
+    }
+    for (const slot of ['S1', 'S2', 'S3']) {
+      const w = room.watch[slot];
+      if (!w || w.kind !== 'me') continue;
+      // 观战席靠「这一席自己的心跳」（前端每 4 分钟带令牌再进一次，/api/room/watch 幂等）。
+      // 不再用「全场还有人挂着观战连接就不清」的粗判据 —— 那会让关掉页面的旧席位
+      // 一直赖在观战席上，只要还有别人在看。
+      if (t - (w.seenAt || room.lastActive || t) >= WATCH_TTL_MS) {
+        room.watch[slot] = blankSeat();
+        changed = true;
+        this.emit(room, 'room', { kind: 'watch', slot, nick: '', reason: 'idle', room: this.info(room) }, 'all');
+      }
+    }
+    return changed;
   }
   setReady(code, plan, token, ready) {
     const room = this.get(code);
@@ -666,6 +722,9 @@ class Registry {
       const h = room.m ? room.m.history[room.m.history.length - 1] : null;
       clean.truth = ev.truth;              // 这时候已亮牌，真值可以公布
       clean.hp = this.hpByPlan(room, room.m);
+      // 输家按 plan 给：hp 是 plan 键，复式换座时如果还按 chair 给，
+      // 界面就会把「剩 X 血」安到另一个人头上（座位令牌、昵称全是 plan 口径）。
+      clean.loser = ev.loser ? this.planOfChair(room, ev.loser) : null;
       clean.stake = h && h.stake ? h.stake : 1;     // 这一手掉多少血：给界面写「−1 血（剩 7）」
       clean.openedBy = plan;                                      // 开盅的人
       clean.bidBy = h && h.bid ? this.planOfChair(room, h.bid.by) : null;   // 被开的那手是谁喊的
@@ -902,7 +961,8 @@ class Registry {
       for (const [code, room] of [...this.rooms]) {
         if (!room.subs.size && !room.emptySince) room.emptySince = t;
         const emptyTooLong = room.emptySince && (t - room.emptySince) > EMPTY_MS;
-        if (emptyTooLong || (t - room.lastActive) > IDLE_MS) this.close(code);
+        if (emptyTooLong || (t - room.lastActive) > IDLE_MS) { this.close(code); continue; }
+        this.reapIdleSeats(room, t);   // 关掉页面的空壳席位（对战席 10 分钟 / 观战席 15 分钟）放出来
       }
       if (this.opts.vault) this.opts.vault.sweep();
     }, 60000);

@@ -187,6 +187,28 @@ async function playTable(opts = {}) {
     // 提交回调不许无条件覆盖出价区：必须先看有没有收到过新的 ask
     ok(/const seq = S\.askSeq;[\s\S]{0,600}if \(S\.askSeq !== seq\)/.test(playTxt),
       '提交开盅/喊价的回调按 askSeq 让路（ask 已把下一手推进来时不得抹掉按钮）');
+    // 全场流水是玩家最常回看的一栏：开盅那一行必须把两边骰子带出来（数据来自 reveal.dice，未开盅不下发）
+    ok(/revealDiceHtml\(d\)\s*\)/.test(playTxt) && /r\.dice\[k\]/.test(playTxt) && /lg-dice/.test(playTxt),
+      '全场流水的开盅行带双方骰子（revealDiceHtml）');
+  }
+
+  /* 事故：换桌后右座挂着上一局的「人机 0 血 · 倒下」，中间喊价卡是「4 个 3」，
+     本轮序列却是「2 个 6」——观战全知快照 S.omni 一旦赋值就不再作废，
+     坐进座位后它还在压着实时数据。这几条钉住「omni 只喂观战视角 + 换桌换局必须清残留」。 */
+  console.log('[6] 观战快照不许串到自己桌上');
+  {
+    const playTxt = fs.readFileSync(path.join(ROOT, 'web/play.js'), 'utf8');
+    const roomTxt = fs.readFileSync(path.join(ROOT, 'src/rooms.js'), 'utf8');
+    ok(!/const hp = \(S\.omni && S\.omni\.hp\)/.test(playTxt), 'renderHp 不再无条件优先吃 S.omni');
+    ok(/S\.plan === 'spec' && S\.omni && S\.omni\.hp/.test(playTxt), '血量只在观战时取 S.omni');
+    ok(/S\.plan === 'spec' && S\.omni && S\.omni\.turn/.test(playTxt), '「轮到谁」只在观战时取 S\.omni');
+    ok(/omni = watching \? S\.omni : null/.test(playTxt), 'renderView 的 omni 只对观战生效');
+    ok(/if \(S\.plan !== 'spec'\) \{ S\.omni = null; return; \}/.test(playTxt), '坐进座位后收到 omni 直接丢弃');
+    ok(/function resetTable\(/.test(playTxt), '有 resetTable：换桌/换局的残留清理入口');
+    ok(/on\('game'[\s\S]{0,120}resetTable\(\)/.test(playTxt), '每开新一局先清残留（上一把的 0 血不许带进新局）');
+    ok(/d\.room\.code !== oldCode\) resetTable\(\{ room: true \}\)/.test(playTxt), '换房间清残留（含全场流水）');
+    // 服务端：开盅事件里的输家按 plan 给，别给椅子号（复式换座时「剩 X 血」会安到别人头上）
+    ok(/clean\.loser = ev\.loser \? this\.planOfChair\(room, ev\.loser\) : null/.test(roomTxt), '开盅事件输家按 plan 归属');
   }
 
   console.log(fail ? '==> SETTLE REGRESSION FAIL ' + fail : '==> ALL PASS');

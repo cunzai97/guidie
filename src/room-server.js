@@ -444,7 +444,7 @@ async function api(req, res, u) {
   }
   if (p === '/api/room/join' && req.method === 'POST') {
     const b = await readBody(req); if (!b) return json(res, 400, { error: 'JSON 解析失败' });
-    let spec = { nick: b.nick, pass: b.pass, user: me };
+    let spec = { nick: b.nick, pass: b.pass, user: me, watchToken: b.watchToken };
     if (b.seatSpec) {
       const rs = await resolveSeat(b.seatSpec, me, ip);
       if (!rs.ok) return json(res, 400, { error: rs.error });
@@ -458,7 +458,7 @@ async function api(req, res, u) {
   // 观战席：默认进来就是观战（全知视角）
   if (p === '/api/room/watch' && req.method === 'POST') {
     const b = await readBody(req); if (!b) return json(res, 400, { error: 'JSON 解析失败' });
-    const r = registry.watchSeat(String(b.code || '').toUpperCase(), { nick: b.nick, pass: b.pass, user: me });
+    const r = registry.watchSeat(String(b.code || '').toUpperCase(), { nick: b.nick, pass: b.pass, user: me, watchToken: b.watchToken });
     if (!r.ok) return json(res, 400, { error: r.reason });
     return json(res, 200, r);
   }
@@ -479,7 +479,7 @@ async function api(req, res, u) {
   // 离开房间：把这个人的席位真清掉（不然别人看到的是一张「虚空的我」）
   if (p === '/api/room/leave' && req.method === 'POST') {
     const b = await readBody(req); if (!b) return json(res, 400, { error: 'JSON 解析失败' });
-    const r = registry.leave(String(b.code || '').toUpperCase(), { user: me, token: b.token });
+    const r = registry.leave(String(b.code || '').toUpperCase(), { user: me, token: b.token, watchToken: b.watchToken });
     return json(res, r.ok ? 200 : 400, r.ok ? r : { error: r.reason });
   }
   // 把席位上的模型放下
@@ -602,6 +602,10 @@ async function api(req, res, u) {
       const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0;
       const wait = Math.min(25000, Math.max(0, parseInt(u.searchParams.get('wait') || '25000', 10) || 0));
       registry.touchPoll(room, role);
+      {   // 观战席心跳：带上 watchToken 就续命，否则 15 分钟后由 GC 收回那一席
+        const wt = u.searchParams.get('watchToken') || '';
+        if (wt) registry.touchWatch(room, wt);
+      }
       let evs = registry.pollEvents(room, role, since);
       if (!since && evs.length > 60) evs = evs.slice(-60);     // 首次进房别把整圈缓冲吐一遍，state 由 view 兜住
       if (!evs.length && wait > 0) {

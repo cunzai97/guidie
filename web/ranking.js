@@ -71,6 +71,21 @@ function filterEffort(matches, effort) {
 
 function expected(ra, rb) { return 1 / (1 + Math.pow(10, (rb - ra) / 400)); }
 
+/* 真人没有端点指纹：把昵称当模型位，让不同玩家各占一条，而不是全并成一个「human」。
+ * 匿名访客（没登录 = 没有账号 id，昵称回落到「玩家」）模型位加 guest: 前缀 ——
+ * 他们不进榜，否则一屏全是同名「玩家」，看着像一堆人机。 */
+function seatForBoard(seat) {
+  if (!seat) return null;
+  if (String(seat.base || '') !== 'human') return seat;
+  const guest = seat.id === 'me:guest' || !seat.id;
+  return Object.assign({}, seat, { model: (guest ? 'guest:' : '') + (seat.alias || 'human'), guest });
+}
+function prepareBoard(matches) {
+  return (matches || []).map(m => Object.assign({}, m, {
+    seats: { A: seatForBoard(m.seats && m.seats.A), B: seatForBoard(m.seats && m.seats.B) },
+  }));
+}
+
 const STAT_KEYS = ['steps', 'calls', 'opens', 'opensCorrect', 'slashes', 'forfeits', 'tokens', 'ms', 'memos'];
 
 /* 按时间顺序打一遍 Elo。matches 应已按组/强度筛过；返回排名数组（四舍五入显示）。 */
@@ -112,7 +127,7 @@ function elo(matches) {
   })).sort((x, y) => y.rating - x.rating || y.wins - x.wins || x.losses - y.losses || x.key.localeCompare(y.key));
 }
 
-const API = { INITIAL, K, PROVISIONAL_GAMES, sha1hex, hashTexts, identity, groupKey, listGroups, filterEffort, expected, elo };
+const API = { INITIAL, K, PROVISIONAL_GAMES, sha1hex, hashTexts, identity, groupKey, listGroups, filterEffort, expected, seatForBoard, prepareBoard, elo };
 if (NODE) module.exports = API;
 else root.ArenaRanking = API;
 })(typeof self !== 'undefined' ? self : globalThis);

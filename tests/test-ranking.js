@@ -100,4 +100,39 @@ const rev = RK.elo([match(1, 'A'), match(2, 'B')]).find(e => e.model === 'MA').r
 assert(fwd > rev, '先输后赢应高于先赢后输');
 console.log('[10] 时间顺序路径依赖 ✓ (' + fwd + ' > ' + rev + ')');
 
+// [11] 匿名访客（没有账号 id）在榜上打 guest: 前缀；有账号的真人按昵称各占一条
+const human = (id, alias) => ({ id, alias, model: 'human', base: 'human', effort: 'off' });
+{
+  const prepared = RK.prepareBoard([
+    { t: 1, winner: 'A', seats: { A: human('me:guest', '玩家'), B: seat('b', 'MB') } },
+    { t: 2, winner: 'B', seats: { A: human('u-1', 'pan'), B: seat('b', 'MB') } },
+  ]);
+  assert.strictEqual(prepared[0].seats.A.model, 'guest:玩家', '匿名访客要打 guest: 前缀');
+  assert.strictEqual(prepared[0].seats.A.guest, true, '匿名访客要打 guest 标记');
+  assert.strictEqual(prepared[1].seats.A.model, 'pan', '有账号的真人用昵称当模型位');
+  assert.ok(!prepared[1].seats.A.guest, '有账号的不算匿名');
+  const board = RK.elo(prepared);
+  const shown = board.filter(e => !String(e.model || '').startsWith('guest:'));
+  assert.ok(!shown.some(e => String(e.model).startsWith('guest:')), '榜上不能出现 guest 条目');
+  assert.ok(shown.some(e => e.model === 'pan' && e.base === 'human'), '真人账号在榜上');
+  // 对手分照算：匿名访客那局照样给 bot 记分（只是访客自己不上榜）
+  const bot = board.find(e => e.model === 'MB');
+  assert.strictEqual(bot.games, 2, '匿名局照样计入对手的局数');
+}
+console.log('[11] 匿名访客不进榜、但对局照算 ✓');
+
+// [12] 样本门槛：只打过一局的不进默认榜（云端那串随机昵称就是这么被挡掉的）
+{
+  const prep = [];
+  for (let i = 0; i < 4; i++) prep.push({ t: i + 1, winner: 'A', seats: { A: human('u-1', 'pan'), B: seat('b', 'MB') } });
+  prep.push({ t: 99, winner: 'A', seats: { A: human('u-2', 'th9at2i'), B: seat('b', 'MB') } });
+  const board = RK.elo(RK.prepareBoard(prep));
+  const shown3 = board.filter(e => !String(e.model || '').startsWith('guest:') && e.games >= 3);
+  const shown1 = board.filter(e => !String(e.model || '').startsWith('guest:') && e.games >= 1);
+  assert.ok(shown3.some(e => e.model === 'pan'), '4 局的留在榜上');
+  assert.ok(!shown3.some(e => e.model === 'th9at2i'), '只打 1 局的被门槛挡掉');
+  assert.ok(shown1.some(e => e.model === 'th9at2i'), '放宽到 1 局就能看到');
+}
+console.log('[12] 样本门槛挡掉「只打一局」的噪声 ✓');
+
 console.log('==> ALL PASS');

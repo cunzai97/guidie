@@ -14,7 +14,8 @@ const KIND_SHORT = { open: '空', me: '真人', llm: '模型', preset: '平台�
 const S = {
   sid: localStorage.getItem('sid') || '', me: null, ping: null,
   room: null, plan: null, seatToken: '', role: 'spec',
-  view: null, es: null, gameAt: { A: '甲方', B: '乙方' },
+  view: null, omni: null, roundBids: null, lastReveal: null, revealed: false,
+  es: null, gameAt: { A: '甲方', B: '乙方' },
   stats: null, timer: null, sel: null, submitted: false,
   // askSeq：收到「轮到我」的次数。提交行动的回调要靠它判断「我提交之后，服务端是不是已经
   // 把下一手推给我了」——不能无条件覆盖出价区，否则会把刚渲染好的下一轮按钮抹掉。
@@ -302,8 +303,9 @@ async function initHome() {
           enterRoom(code, plan, seen || '', room, host || '');
           if (!room) connect();   // 先连上，room 状态由事件流补
         } else {
-          const w = await api('/api/room/watch', { code, nick: $('jNick').value || '' });
+          const w = await api('/api/room/watch', { code, nick: $('jNick').value || '', watchToken: localStorage.getItem('wt_' + code) || undefined });
           S.watchSlot = w.slot || null;
+          if (w.token) { S.watchToken = w.token; localStorage.setItem('wt_' + code, w.token); }
           if (w.reason) setTimeout(() => msg('#roomMsg', w.reason), 600);
           enterRoom(code, 'spec', '', w.room, '');
         }
@@ -398,7 +400,7 @@ function wireNav() {
   });
   // 筛选改动只重渲染（数据已缓存），「刷新」才重新拉取
   ['mFilter', 'mRule', 'mCount'].forEach(id => { const el = $(id); if (el) el.onchange = () => { if (id === 'mCount') loadMatchesPage(); else renderMatchesTable(); }; });
-  ['rkGroup', 'rkEffort'].forEach(id => { const el = $(id); if (el) el.onchange = renderRankTable; });
+  ['rkGroup', 'rkEffort', 'rkMin'].forEach(id => { const el = $(id); if (el) el.onchange = renderRankTable; });
   if ($('btnReloadMatches')) $('btnReloadMatches').onclick = loadMatchesPage;
   if ($('btnReloadRank')) $('btnReloadRank').onclick = loadRankPage;
 }
@@ -478,17 +480,16 @@ function renderRankTable() {
   const effort = ($('rkEffort') && $('rkEffort').value) || 'all';
   let inGroup = gkey ? rankCache.filter(m => ArenaRanking.groupKey(m) === gkey) : rankCache;
   const filtered = ArenaRanking.filterEffort(inGroup, effort);
-  // 真人没有端点指纹：把昵称当模型位，让不同玩家各占一条，而不是全并成一个「human」
-  const normalized = filtered.map(m => Object.assign({}, m, { seats: {
-    A: m.seats.A ? Object.assign({}, m.seats.A, m.seats.A.base === 'human' ? { model: m.seats.A.alias || 'human' } : {}) : null,
-    B: m.seats.B ? Object.assign({}, m.seats.B, m.seats.B.base === 'human' ? { model: m.seats.B.alias || 'human' } : {}) : null,
-  } }));
-  const board = ArenaRanking.elo(normalized);
+  // 真人按昵称各占一条；匿名访客在 ranking.js 里打 guest: 前缀，默认不进榜
+  const board = ArenaRanking.elo(ArenaRanking.prepareBoard(filtered));
+  const minGames = +((($('rkMin') && $('rkMin').value) || '3')) || 1;
+  const shown = board.filter(e => !String(e.model || '').startsWith('guest:') && e.games >= minGames);
   const g = ArenaRanking.listGroups(inGroup)[0];
-  if (note) note.textContent = `当前分组：${(g && (g.rulesName || g.ruleset_hash)) || '—'} · 强度：${EFFORT_LABEL[effort] || effort} · 样本 ${filtered.length} 局 · 不满 ${ArenaRanking.PROVISIONAL_GAMES} 局为暂定分。同一指纹内才比 Elo，跨指纹不混排。`;
-  if (!board.length) { el.innerHTML = '<div class="empty-note">这一组 / 这一档还没有分出胜负的对局 —— 换一组或放宽强度筛选。</div>'; return; }
+  const guestN = board.filter(e => String(e.model || '').startsWith('guest:')).length;
+  if (note) note.textContent = `当前分组：${(g && (g.rulesName || g.ruleset_hash)) || '—'} · 强度：${EFFORT_LABEL[effort] || effort} · 样本 ${filtered.length} 局 · 榜上 ${shown.length} 位（≥${minGames} 局）· 匿名游客 ${guestN} 位不计分 · 不满 ${ArenaRanking.PROVISIONAL_GAMES} 局为暂定分。同一指纹内才比 Elo，跨指纹不混排。`;
+  if (!shown.length) { el.innerHTML = '<div class="empty-note">这一组 / 这一档还没有够局数的选手 —— 放宽「样本门槛」或换一组。</div>'; return; }
   const head = '<div class="trow thead"><span class="center">#</span><span>选手</span><span>积分</span><span>胜负</span><span class="center">局数</span><span class="right">胜率</span></div>';
-  el.innerHTML = head + board.map((e, i) => {
+  el.innerHTML = head + shown.map((e, i) => {
     const rc = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
     const modelLabel = e.base === 'human' ? '真人' : (((S.ping && S.ping.bots) || []).find(b => b.id === e.model) || {}).label || e.model || '模型';
     return `<div class="trow">
@@ -556,6 +557,21 @@ function enterRoom(code, plan, token, room, host) {
   saveMyRoom({ code, plan: S.plan, token: S.seatToken, host: S.host, label: (room && room.title) || ({ A: '甲方', B: '乙方' }[S.plan] || '观战') });
   connect();
   renderRoom();
+  startWatchBeat();
+}
+
+/* 观战席心跳：观战席没有 per-席连接计数，服务端只能靠「这张席最后什么时候有过动静」
+ * 判活。每 4 分钟拿着观战令牌再进一次（幂等，不会多占席），人一走心跳就停，
+ * 15 分钟后那个席位由 GC 收回 —— 不再出现「关掉页面的玩家永久挂在观战席上」。 */
+let watchBeatTimer = null;
+function startWatchBeat() {
+  if (watchBeatTimer) { clearInterval(watchBeatTimer); watchBeatTimer = null; }
+  if (S.plan !== 'spec' || !S.watchToken) return;
+  watchBeatTimer = setInterval(() => {
+    if (S.plan !== 'spec' || !S.watchToken || !S.room) return;
+    api('/api/room/watch', { code: S.room.code, nick: (S.me && S.me.nick) || '', watchToken: S.watchToken }).catch(() => {});
+  }, 4 * 60 * 1000);
+  if (watchBeatTimer.unref) watchBeatTimer.unref();
 }
 
 function mayManage() { return !!(S.host || S.me); }
@@ -648,7 +664,7 @@ function renderRoom() {
   const pg = $('pageRoom');
   pg.querySelectorAll('[data-take]').forEach(b => b.onclick = async () => {
     try {
-      const r2 = await api('/api/room/join', { code: S.room.code, seat: b.dataset.take, nick: (S.me && S.me.nick) || $('hNick').value || '玩家', pass: $('jPass').value || '' });
+      const r2 = await api('/api/room/join', { code: S.room.code, seat: b.dataset.take, nick: (S.me && S.me.nick) || $('hNick').value || '玩家', pass: $('jPass').value || '', watchToken: S.watchToken || localStorage.getItem('wt_' + S.room.code) || undefined });
       S.plan = r2.seat; S.role = r2.seat; S.seatToken = r2.token; S.watchSlot = null;
       localStorage.setItem('seat:' + S.room.code, r2.seat); localStorage.setItem('seattk:' + S.room.code, r2.token);
       S.room = r2.room; connect(); renderRoom(); msg('#roomMsg', '你坐到' + (r2.seat === 'A' ? '甲' : '乙') + '方了，点「准备」再开局。');
@@ -667,9 +683,9 @@ function renderRoom() {
       const r2 = await api('/api/room/unplace', { code: S.room.code, seat: b.dataset.leave, host: S.host, token: S.seatToken });
       S.plan = 'spec'; S.role = 'spec'; S.seatToken = '';
       localStorage.removeItem('seat:' + S.room.code); localStorage.removeItem('seattk:' + S.room.code);
-      const w = await api('/api/room/watch', { code: S.room.code, nick: (S.me && S.me.nick) || $('hNick').value || '' });
-      S.watchSlot = w.slot || null;
-      S.room = w.room || r2.room; connect(); renderRoom();
+      const w = await api('/api/room/watch', { code: S.room.code, nick: (S.me && S.me.nick) || $('hNick').value || '', watchToken: S.watchToken || localStorage.getItem('wt_' + S.room.code) || undefined });
+      S.watchSlot = w.slot || null; S.watchToken = w.token || S.watchToken || null;
+      S.room = w.room || r2.room; connect(); renderRoom(); startWatchBeat();
     } catch (e) { msg('#roomMsg', e.message, 'bad'); }
   });
   pg.querySelectorAll('[data-putui]').forEach(b => b.onclick = () => { S.putUI = b.dataset.putui; renderRoom(); });
@@ -683,8 +699,10 @@ function renderRoom() {
   });
   pg.querySelectorAll('[data-watch]').forEach(b => b.onclick = async () => {
     try {
-      const w = await api('/api/room/watch', { code: S.room.code, nick: (S.me && S.me.nick) || $('hNick').value || '', pass: $('jPass').value || '' });
-      S.watchSlot = w.slot || null; S.watchToken = w.token || null; if (w.room) S.room = w.room; renderRoom();
+      const w = await api('/api/room/watch', { code: S.room.code, nick: (S.me && S.me.nick) || $('hNick').value || '', pass: $('jPass').value || '', watchToken: S.watchToken || localStorage.getItem('wt_' + S.room.code) || undefined });
+      S.watchSlot = w.slot || null; S.watchToken = w.token || S.watchToken || null;
+      if (w.token) localStorage.setItem('wt_' + S.room.code, w.token);
+      if (w.room) S.room = w.room; renderRoom(); startWatchBeat();
     } catch (e) { msg('#roomMsg', e.message, 'bad'); }
   });
 }
@@ -755,6 +773,10 @@ function connect() {
     fn(d);
   });
   on('hello', d => {
+    // 换桌才清残留（重连同一条流不能把牌桌抹掉）：上一桌的血量、亮牌、流水都在这时候作废
+    const oldCode = S.room && S.room.code;
+    if (d.room && d.room.code !== oldCode) resetTable({ room: true });
+    else S.omni = null;          // 同一条流重连：观战快照一律作废，等新的 omni 事件重画
     if (d.room) S.room = d.room;
     // 握手里的 you 是服务端校验过座位令牌后的身份：认回原座；令牌失效则退回观战并清本地
     if (d.you === 'A' || d.you === 'B') { S.plan = d.you; S.role = d.you; }
@@ -764,7 +786,7 @@ function connect() {
       msg('#roomMsg', '本地存的座位令牌已失效（桌重启或座位被释放），已退回观战。');
     }
     if (d.view) { S.view = d.view; if (d.view && !d.view.over && S.plan !== 'spec') show('pagePlay'); }
-    renderRoom(); if (S.view) renderView();
+    renderRoom(); renderHp(); if (S.view) renderView();
   });
   on('room', d => {
     if (d.room) S.room = d.room;
@@ -775,6 +797,8 @@ function connect() {
   on('state', d => { S.room = d.room; renderRoom(); });
   on('presence', d => { if (S.room && S.room.seats[d.seat]) { S.room.seats[d.seat].connected = d.online ? 1 : 0; renderRoom(); } });
   on('game', d => {
+    // 新的一局：血量 / 喊价 / 亮牌 / 推演全部重来。不清的话，上一把「倒下的人机 0 血」会带进新局。
+    resetTable();
     S.gameAt = d.at || S.gameAt; S.stats = null;
     $('pGame').textContent = '第 ' + d.game + ' 把' + (d.deals > 1 ? '（deal ' + d.deal + '/' + d.deals + '）' : '') + (d.swap ? ' · 已换座位' : '');
     $('history').innerHTML = ''; $('seq').innerHTML = ''; $('over').hidden = true;
@@ -789,7 +813,9 @@ function connect() {
   on('bid', d => { noteBid(d); });
   // 全知通道：观战（不亲自出马）看得到两边骰盅、当前喊价、轮到谁
   on('omni', d => {
-    if (S.plan !== 'spec') return;
+    // 坐进座位后全知快照一律丢弃：它只该喂观战视角，混进自己的牌桌就会出现
+    // 「中间写着 deep 叫 4 个 3、序列里却是 deep 喊 2 个 6」「对面挂着上一局的 0 血」这种打架。
+    if (S.plan !== 'spec') { S.omni = null; return; }
     S.omni = d;
     if (d.hp && S.room) S.room.hp = d.hp;
     if (!S.view) S.view = { roundNo: d.round, over: d.over, zhai: d.zhai, turn: null, legal: [] };
@@ -850,9 +876,32 @@ function seatMeta(p) {
   if (st.kind === 'bot') return '内置人机 · ' + (st.bot || '');
   return (st.model || '模型') + (st.effort ? ' · ' + st.effort : '');
 }
+/* 换桌 / 开新一局必须清掉的「牌桌残留」。
+ * 事故现场：右座人机显示 0 血、状态「倒下」，中间喊价卡写着「4 个 3 · deep 叫的」，
+ * 可本轮喊价序列是「deep 喊 2 个 6」—— 两路数据源打架。
+ * 根因是 S.omni（观战全知快照）一旦被赋值就不再作废：坐进座位后 omni 事件不再进来，
+ * 于是血量 / 当前喊价 / 轮到谁永远停在上一局观战的那一刻；喊价台账、亮牌同理。
+ * 现在：omni 只在观战时参与渲染，且换房、换局、认座一律清空。 */
+function resetTable(opt) {
+  const freshRoom = !!(opt && opt.room);
+  S.omni = null; S.view = null; S.roundBids = null; S.lastReveal = null;
+  S.revealed = false; S.stats = null; S.submitted = false; S.askSeq++;   // 让在途的提交回调让路
+  const wipe = id => { const b = $(id); if (b) b.innerHTML = ''; };
+  wipe('seq'); wipe('history');
+  if (freshRoom) { wipe('logList'); wipe('mySeq'); wipe('oppSeq'); wipe('thinkA'); wipe('thinkB'); }
+  const rev = $('reveal'); if (rev) { rev.hidden = true; rev.innerHTML = ''; }
+  for (const w of ['A', 'B']) { setDice(w, null, '等一手发骰', false); setLast(w, '—'); }
+  if ($('centerChip')) $('centerChip').textContent = '尚未开桌';
+  if ($('bidBox')) $('bidBox').textContent = '—';
+  if ($('bidSub')) $('bidSub').textContent = '每人 5 颗 · 未斋 1 万能 · 2<3<4<5<6<1';
+  if ($('turnText')) $('turnText').textContent = '等待开战';
+  if ($('turnLine')) $('turnLine').textContent = '等待开战';
+  renderHp();
+}
 function renderHp() {
   const r = S.room; if (!r) return;
-  const hp = (S.omni && S.omni.hp) || r.hp || { A: r.hpMax, B: r.hpMax };
+  const omniHp = (S.plan === 'spec' && S.omni && S.omni.hp) ? S.omni.hp : null;
+  const hp = omniHp || r.hp || { A: r.hpMax, B: r.hpMax };
   const turnSeat = turnSeatOf();
   for (const w of ['A', 'B']) {
     const seat = r.seats[w] || {};
@@ -880,7 +929,7 @@ function renderHp() {
 }
 // 轮到哪一座：座位视角里 turn 是 me/opp，观战的全知负载里直接给座位号
 function turnSeatOf() {
-  if (S.omni && S.omni.turn) return S.omni.turn;
+  if (S.plan === 'spec' && S.omni && S.omni.turn) return S.omni.turn;
   const v = S.view; if (!v || v.over) return null;
   if (v.turn === 'me') return seatOfMe();
   if (v.turn === 'opp') return seatOfOpp();
@@ -907,7 +956,8 @@ function backsHtml(n) {
 function revealDice(w, dice, note) { if (dice) setDice(w, dice, note || '已开盅亮牌', false); }
 
 function renderView() {
-  const v = S.view, omni = S.omni, watching = S.plan === 'spec';
+  const watching = S.plan === 'spec';
+  const v = S.view, omni = watching ? S.omni : null;   // 坐在座位上就只认自己那份视角，绝不回落到观战快照
   if (!v && !omni) return;
   renderHp();
   if ($('pCode') && S.room) $('pCode').textContent = S.room.code;
@@ -972,13 +1022,15 @@ function renderSeqLists() {
       : `<div class="hint">${S.plan === 'spec' ? '你是观战，没有「你的动作」这一说。' : '这一手你还没喊过。'}</div>`;
   }
 }
-/* 全场流水（底部控制台第一栏）：一行一条，带时间戳，最新在上 */
-function logLine(who, text, kind) {
+/* 全场流水（底部控制台第一栏）：一行一条，带时间戳，最新在上。
+ * extra 是已经构造好的安全 HTML（目前只有开盅亮牌那一行用它塞两边骰子）。 */
+function logLine(who, text, kind, extra) {
   const box = $('logList'); if (!box) return;
   const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const div = document.createElement('div');
   div.className = 'lg' + (kind ? ' ' + kind : '');
-  div.innerHTML = `<span class="t">${t}</span><span class="who">${esc(seatName(who) || who || '')}</span><span>${esc(text)}</span>`;
+  div.innerHTML = `<span class="t">${t}</span><span class="who">${esc(seatName(who) || who || '')}</span>`
+    + `<span class="lg-body"><span class="lg-tx">${esc(text)}</span>${extra || ''}</span>`;
   box.prepend(div);
   while (box.children.length > 240) box.removeChild(box.lastChild);
 }
@@ -1030,6 +1082,18 @@ function appendSeq(d) {
     while (box.children.length > 8) box.removeChild(box.firstChild);       // 骰盅下面只留最近 8 手
   }
 }
+/* 开盅亮牌：把双方 5 颗骰子挂到流水那一行下面。
+ * 数据来自服务端结算后的 reveal.dice（以座位为键）——未开盅的轮次根本不下发，不存在提前泄漏。 */
+function revealDiceHtml(d) {
+  const r = d && d.reveal;
+  if (!r || !r.dice) return '';
+  const keys = Object.keys(r.dice).filter(k => Array.isArray(r.dice[k]) && r.dice[k].length);
+  if (!keys.length) return '';
+  return '<span class="lg-dice">' + keys.map(k =>
+    '<span class="dg"><span class="dn">' + esc(r[k] || nm(k, d)) + '</span>'
+    + r.dice[k].map(x => '<i class="die-sm">' + x + '</i>').join('') + '</span>'
+  ).join('') + '</span>';
+}
 /* 开盅这一手里的两个人必须分清：事件里的 seat / who 都指「发起开盅那一座」（runner 的 who 是行动者），
  * 喊价的人只能取服务端算好的 bidBy。以前这里把 seat / who 一个当喊价人一个当开盅人，
  * 结果两个名字印成同一个（实测出现过“pan 喊 4 个 4，pan 开盅”）。 */
@@ -1074,10 +1138,10 @@ function settleRound(d) {
         + `<b style="color:${d.truth ? 'var(--ok)' : 'var(--bad)'}">${d.truth ? '够数：开的人输' : '不够：喊的人输'}</b>`
         + `<div class="kv">输家 ${nm(d.loser, d)} −${d.stake || 1} 血${((d.hp || {})[d.loser] != null ? '（剩 ' + d.hp[d.loser] + '）' : '')}</div>`;
     }
-    setLast(d.who, (d.slash ? '劈' : '开盅') + ' → 实际 ' + d.actual + ' 个');
+    setLast(openByOf(d), (d.slash ? '劈' : '开盅') + ' → 实际 ' + d.actual + ' 个');   // 按 plan 落栏：d.who 是椅子号，换座后会对错人
   }
-  logLine(openByOf(d), `${d.slash ? '劈' : '开盅'}${bidByOf(d) !== openByOf(d) ? '（开 ' + seatName(bidByOf(d)) + ' 喊的价）' : ''}：${d.bid.count} 个 ${d.bid.face} · 实际 ${d.actual} 个 · ${d.truth ? '够数→开的人输' : '不够→喊的人输'} · 输家 ${seatName(d.loser)} −${d.stake || 1} 血`
-    + (d.hp && d.hp[d.loser] != null ? `（剩 ${d.hp[d.loser]}）` : ''), 'open');
+  logLine(openByOf(d), `${d.slash ? '劈' : '开盅'}${bidByOf(d) !== openByOf(d) ? '（开 ' + seatName(bidByOf(d)) + ' 喊的价）' : ''}：${d.bid.count} 个 ${d.bid.face}${d.bid.zhai ? '（斋）' : ''} · 实际 ${d.actual} 个 · ${d.truth ? '够数→开的人输' : '不够→喊的人输'} · 输家 ${seatName(d.loser)} −${d.stake || 1} 血`
+    + (d.hp && d.hp[d.loser] != null ? `（剩 ${d.hp[d.loser]}）` : ''), 'open', revealDiceHtml(d));
   if (d.hp && S.room) { S.room.hp = d.hp; renderHp(); }
 }
 function renderStats(d) {
